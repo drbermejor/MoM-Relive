@@ -95,7 +95,9 @@ The native launcher applies only the required URL, EAC and persistence
 compatibility changes, starts the Relive backend, sets the OpenSSL workaround,
 and runs `MemoriesOfMarsServer.exe -log` in a visible console. It stops the
 backend it owns when the server exits. It does not overwrite native server
-settings.
+settings other than forcing `EnableEAC` to `false`, which is required for the
+community service. Server name, password, world ID, player limit,
+administrators and other native values are preserved.
 
 For existing scripts, the same executable supports a patch-only or backend-only
 flow:

@@ -196,7 +196,8 @@ class ConfigTests(unittest.TestCase):
 
     def test_server_openssl_compatibility_can_be_disabled(self):
         env = momlib.server_environment(
-            {"server_openssl_compat": False}, {"KEEP": "yes"}
+            {"server_openssl_compat": False},
+            {"KEEP": "yes", "OPENSSL_ia32cap": "inherited-value"},
         )
 
         self.assertNotIn("OPENSSL_ia32cap", env)

@@ -539,6 +539,9 @@ def server_environment(settings: dict, environ=None) -> dict:
     env = dict(os.environ if environ is None else environ)
     if settings.get("server_openssl_compat", True):
         env["OPENSSL_ia32cap"] = ":~0x20000000"
+    else:
+        # The checkbox must also override a value inherited from the shell.
+        env.pop("OPENSSL_ia32cap", None)
     return env
 
 

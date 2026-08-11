@@ -83,6 +83,11 @@ def _start_backend(settings):
             return process
         time.sleep(0.2)
     process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
     raise OSError("The Relive backend did not become ready in time")
 
 
@@ -235,6 +240,7 @@ def main(argv=None):
                 backend_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 backend_process.kill()
+                backend_process.wait(timeout=5)
 
 
 if __name__ == "__main__":
