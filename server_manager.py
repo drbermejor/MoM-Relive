@@ -65,6 +65,20 @@ def _show_server_console(visible):
     return True
 
 
+def _restore_system_dll_search():
+    """Keep external game binaries from loading DLLs bundled by PyInstaller."""
+    if os.name != "nt":
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetDllDirectoryW.argtypes = (ctypes.c_wchar_p,)
+    kernel32.SetDllDirectoryW.restype = ctypes.c_int
+    if not kernel32.SetDllDirectoryW(None):
+        code = ctypes.get_last_error()
+        raise OSError(code, "Windows could not restore the system DLL search path")
+
+
 def _disable_server_quickedit(pid):
     """Evita que seleccionar texto congele el bucle principal del juego."""
     if os.name != "nt":
@@ -88,7 +102,11 @@ def _disable_server_quickedit(pid):
 
 def _launch_server_process(settings):
     exe = Path(settings["server_dir"]) / momlib.SERVER_EXE_REL
-    kwargs = {"cwd": str(exe.parent)}
+    _restore_system_dll_search()
+    kwargs = {
+        "cwd": str(exe.parent),
+        "env": momlib.server_environment(settings),
+    }
     if os.name == "nt":
         startup = subprocess.STARTUPINFO()
         startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -184,6 +202,9 @@ class ServerConfigDialog:
         self.vars["skip_cloning"] = self.tk.BooleanVar(
             value=bool(settings.get("skip_cloning", True))
         )
+        self.vars["server_openssl_compat"] = self.tk.BooleanVar(
+            value=bool(settings.get("server_openssl_compat", True))
+        )
         self._build()
         if not self.vars["public_ip"].get().strip():
             self.window.after(350, lambda: self.detect_public_ip(automatic=True))
@@ -239,6 +260,16 @@ class ServerConfigDialog:
             text="Preserve character on reconnect (skip the cloning facility)",
             variable=self.vars["skip_cloning"],
         ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ssl_check = ttk.Checkbutton(
+            server_box,
+            text="Legacy OpenSSL compatibility (recommended on modern processors)",
+            variable=self.vars["server_openssl_compat"],
+        )
+        ssl_check.grid(row=8, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ui_helpers.ToolTip(
+            ssl_check,
+            "Sets OPENSSL_ia32cap=:~0x20000000 when launching the dedicated server.",
+        )
         best = self.worlds[0] if self.worlds else None
         current = self.vars["server_id"].get().strip()
         if best and best["server_id"] != current:
@@ -249,12 +280,12 @@ class ServerConfigDialog:
                     f"({best['players']} player(s), {best['player_files']} files)."
                 ),
                 foreground="#9a5b00",
-            ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(6, 0))
             ttk.Button(
                 server_box,
                 text="Use this save",
                 command=lambda: self.vars["server_id"].set(best["server_id"]),
-            ).grid(row=8, column=2, padx=(7, 0), pady=(6, 0))
+            ).grid(row=9, column=2, padx=(7, 0), pady=(6, 0))
         ttk.Label(
             server_box,
             text=(
@@ -263,22 +294,35 @@ class ServerConfigDialog:
             ),
             wraplength=680,
             justify="left",
-        ).grid(row=9, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        ).grid(row=10, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(actions, text="Save", command=self.save_only).pack(side="left")
-        ttk.Button(actions, text="Save and apply patch", command=self.apply).pack(
-            side="left", padx=8
-        )
+        ttk.Button(
+            actions, text="Save and apply patch (managed)", command=self.apply
+        ).pack(side="left", padx=8)
+        ttk.Button(
+            actions,
+            text="Apply compatibility only",
+            command=self.apply_compatibility,
+        ).pack(side="left")
+        native_actions = ttk.Frame(outer)
+        native_actions.pack(fill="x", pady=(7, 0))
+        ttk.Button(
+            native_actions,
+            text="Open native server config",
+            command=self.open_native_config,
+        ).pack(side="left")
         ttk.Button(actions, text="Open Windows Firewall ports", command=self.firewall).pack(
-            side="left"
+            side="right"
         )
         ttk.Label(
             outer,
             text=(
-                "Apply prepares the executable and configuration files, but does not start the world. "
-                "Then close this window and click Start in the manager."
+                "The managed action keeps the original manager workflow and writes the fields "
+                "above. Compatibility only preserves the native server name, password, world "
+                "and player settings. Neither action starts the world."
             ),
             wraplength=690,
             justify="left",
@@ -364,6 +408,32 @@ class ServerConfigDialog:
             self.manager.log(f"Configuration applied: {result['url']}")
         except (ValueError, OSError, redirect_urls.PatchError) as exc:
             self.manager.error("Apply configuration", exc)
+
+    def apply_compatibility(self):
+        try:
+            settings = self._save()
+            result = momlib.apply_server_compatibility(
+                settings["server_dir"],
+                settings["server_backend_host"],
+                settings["backend_port"],
+                settings["access_key"],
+                skip_cloning=settings["skip_cloning"],
+            )
+            self.manager.log(
+                f"Compatibility applied; native server settings preserved: {result['url']}"
+            )
+        except (ValueError, OSError, redirect_urls.PatchError) as exc:
+            self.manager.error("Apply compatibility", exc)
+
+    def open_native_config(self):
+        try:
+            settings = self._save()
+            path = Path(settings["server_dir"]) / momlib.SERVER_CFG_REL
+            if not path.is_file():
+                raise momlib.ConfigError(f"Could not find {path}")
+            os.startfile(path)
+        except (ValueError, OSError) as exc:
+            self.manager.error("Native server configuration", exc)
 
     def detect_public_ip(self, automatic=False):
         if not automatic:

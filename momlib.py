@@ -76,6 +76,7 @@ def default_settings() -> dict:
         "max_players": 8,
         "admin_id": "",
         "skip_cloning": True,
+        "server_openssl_compat": True,
     }
 
 
@@ -493,11 +494,11 @@ def apply_server(
     admin_id=None,
     skip_cloning=True,
 ) -> dict:
-    root = _require_root(server_dir, SERVER_EXE_REL, "the dedicated server")
-    url = backend_url(host, port, key, "s")
-    set_limbic_url(root / SERVER_ENGINE_REL, url)
-    set_clone_fix(root / SERVER_GAME_REL, bool(skip_cloning))
-    updates = {"EnableEAC": False}
+    result = apply_server_compatibility(
+        server_dir, host, port, key, skip_cloning=skip_cloning
+    )
+    root = Path(server_dir).expanduser().resolve()
+    updates = {}
     # Password, IP publica y administradores deben poder vaciarse desde la UI.
     fields = {
         "ServerName": server_name if server_name not in (None, "") else None,
@@ -508,9 +509,37 @@ def apply_server(
         "Admins": admin_id,
     }
     updates.update({k: v for k, v in fields.items() if v is not None})
-    update_server_cfg(root / SERVER_CFG_REL, updates)
+    if updates:
+        update_server_cfg(root / SERVER_CFG_REL, updates)
+    return result
+
+
+def apply_server_compatibility(
+    server_dir,
+    host,
+    port,
+    key,
+    *,
+    skip_cloning=True,
+) -> dict:
+    """Apply only Relive compatibility while preserving native world settings."""
+    root = _require_root(server_dir, SERVER_EXE_REL, "the dedicated server")
+    url = backend_url(host, port, key, "s")
+    set_limbic_url(root / SERVER_ENGINE_REL, url)
+    set_clone_fix(root / SERVER_GAME_REL, bool(skip_cloning))
+    # EAC cannot be used with the retired official services. All other values
+    # remain owned by DedicatedServerConfig.cfg and its native editing flow.
+    update_server_cfg(root / SERVER_CFG_REL, {"EnableEAC": False})
     replaced = redirect_urls.patch(root / SERVER_EXE_REL, url)
     return {"url": url, "binary_urls": replaced, "config": str(root / SERVER_CFG_REL)}
+
+
+def server_environment(settings: dict, environ=None) -> dict:
+    """Return an environment suitable for the legacy dedicated server."""
+    env = dict(os.environ if environ is None else environ)
+    if settings.get("server_openssl_compat", True):
+        env["OPENSSL_ia32cap"] = ":~0x20000000"
+    return env
 
 
 def restore_client(client_dir, ini_path: Path | None = None) -> dict:

@@ -5,7 +5,7 @@ An unofficial community replacement for the retired online services used by
 in the in-game browser, connect without EAC, and keep world and character
 progress on the server machine.
 
-Current version: **0.5.1**. Tested on Windows 11 with the Steam client and the
+Current version: **0.6.0**. Tested on Windows 11 with the Steam client and the
 Steam dedicated-server installation.
 
 > This project does not contain or redistribute the game, game assets, Steam
@@ -29,6 +29,8 @@ Steam dedicated-server installation.
 - Server manager with live status, connected players, character names parsed
   from `Game.log`, a scrollable live log, panel activity, and a safely hidden or
   visible native server console.
+- Console-first native server launcher that preserves the game's own
+  `DedicatedServerConfig.cfg` settings.
 - Automatic public-IP detection and automatic recovery after the game's daily
   server restart.
 
@@ -67,6 +69,44 @@ router.
 The shared key keeps casual Internet scans out of the API. It is not an
 anti-cheat secret: an authorized client can read the value from its own patched
 executable.
+
+The manager enables the legacy OpenSSL CPU workaround for the dedicated server
+by default. This is equivalent to setting
+`OPENSSL_ia32cap=:~0x20000000` in a batch file and prevents an immediate exit on
+affected modern processors. It can be disabled under **Configuration**.
+
+## Native server mode
+
+The server component also installs **Native Server (console)**. Use it when you
+prefer the game's normal console and `DedicatedServerConfig.cfg` workflow:
+
+This is an additional mode; the existing Server Manager and all of its managed
+start, stop, restart, backup and monitoring features remain available.
+
+1. Open **Server Manager**, configure the Relive backend values and server
+   folder, then click **Save**. You only need to do this again when those Relive
+   connection values change.
+2. Edit `DedicatedServerConfig.cfg` in the dedicated-server folder with your
+   usual editor or existing tooling. Server name, password, world ID, player
+   limit, administrators and other native values remain under your control.
+3. Launch **Native Server (console)** from the Start menu.
+
+The native launcher applies only the required URL, EAC and persistence
+compatibility changes, starts the Relive backend, sets the OpenSSL workaround,
+and runs `MemoriesOfMarsServer.exe -log` in a visible console. It stops the
+backend it owns when the server exits. It does not overwrite native server
+settings.
+
+For existing scripts, the same executable supports a patch-only or backend-only
+flow:
+
+```powershell
+MoMNativeServer.exe --prepare-only
+MoMNativeServer.exe --backend-only
+MoMNativeServer.exe --server-dir "D:\Steam\steamapps\common\Memories of Mars - Dedicated Server"
+```
+
+Arguments placed after `--` are passed directly to the native server executable.
 
 ## Connect a client
 
@@ -144,6 +184,7 @@ Command-line patching is also available:
 python apply.py server --key ab12cd34 --public-ip 203.0.113.10
 python backend.py --access-key ab12cd34 --data-dir "$env:APPDATA\MoMRevival"
 python apply.py client --host 203.0.113.10 --key ab12cd34 --account-id 10001
+python native_server.py --server-dir "C:\path\to\Memories of Mars - Dedicated Server"
 ```
 
 ## How it works

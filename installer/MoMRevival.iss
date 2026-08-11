@@ -1,6 +1,6 @@
 #define MyAppName "Memories of Mars Revival"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.5.0"
+  #define MyAppVersion "0.6.0"
 #endif
 #define MyAppExeName "MoMRevival.exe"
 
@@ -26,6 +26,7 @@ SetupLogging=yes
 Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion; Components: client
 Source: "..\dist\MoMClientLauncher.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: client
 Source: "..\dist\MoMServerManager.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: server
+Source: "..\dist\MoMNativeServer.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: server
 
 [Types]
 Name: "full"; Description: "Client and dedicated server"
@@ -40,6 +41,7 @@ Name: "server"; Description: "Server: replacement backend and management panel";
 [Icons]
 Name: "{group}\MoM Revival Client"; Filename: "{app}\{#MyAppExeName}"; Components: client
 Name: "{group}\Server Manager"; Filename: "{app}\MoMServerManager.exe"; Components: server
+Name: "{group}\Native Server (console)"; Filename: "{app}\MoMNativeServer.exe"; WorkingDir: "{app}"; Components: server
 Name: "{autodesktop}\MoM Revival Client"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; Components: client
 Name: "{autodesktop}\MoM Server Manager"; Filename: "{app}\MoMServerManager.exe"; Tasks: managerdesktopicon; Components: server
 

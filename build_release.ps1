@@ -25,12 +25,18 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin `
     --name MoMServerManager server_manager.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed while building the server manager" }
 
+python -m PyInstaller --noconfirm --clean --onefile --console --uac-admin `
+    --name MoMNativeServer native_server.py
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed while building the native server launcher" }
+
 $Exe = Join-Path $ProjectDir "dist\MoMRevival.exe"
 if (-not (Test-Path -LiteralPath $Exe)) { throw "$Exe was not generated" }
 $LauncherExe = Join-Path $ProjectDir "dist\MoMClientLauncher.exe"
 if (-not (Test-Path -LiteralPath $LauncherExe)) { throw "$LauncherExe was not generated" }
 $ManagerExe = Join-Path $ProjectDir "dist\MoMServerManager.exe"
 if (-not (Test-Path -LiteralPath $ManagerExe)) { throw "$ManagerExe was not generated" }
+$NativeServerExe = Join-Path $ProjectDir "dist\MoMNativeServer.exe"
+if (-not (Test-Path -LiteralPath $NativeServerExe)) { throw "$NativeServerExe was not generated" }
 
 $IsccCandidates = @(
     (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
@@ -56,5 +62,7 @@ Write-Host "Launcher: $LauncherExe"
 Write-Host "  SHA256:  $((Get-FileHash -Algorithm SHA256 -LiteralPath $LauncherExe).Hash)"
 Write-Host "Server manager: $ManagerExe"
 Write-Host "  SHA256:  $((Get-FileHash -Algorithm SHA256 -LiteralPath $ManagerExe).Hash)"
+Write-Host "Native server: $NativeServerExe"
+Write-Host "  SHA256:  $((Get-FileHash -Algorithm SHA256 -LiteralPath $NativeServerExe).Hash)"
 Write-Host "Installer: $Installer"
 Write-Host "  SHA256:   $((Get-FileHash -Algorithm SHA256 -LiteralPath $Installer).Hash)"

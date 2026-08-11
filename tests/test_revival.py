@@ -13,6 +13,7 @@ from unittest import mock
 import backend
 import client_launcher
 import momlib
+import native_server
 import redirect_urls
 import server_manager
 
@@ -157,6 +158,48 @@ class ConfigTests(unittest.TestCase):
                 (server / momlib.SERVER_CFG_REL).read_text(encoding="utf-8")
             )
             self.assertTrue(cfg["EnableEAC"])
+
+    def test_compatibility_only_preserves_native_server_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = Path(tmp) / "server"
+            fake_exe(server / momlib.SERVER_EXE_REL)
+            config = server / momlib.SERVER_CFG_REL
+            config.write_text(
+                json.dumps(
+                    {
+                        "ServerName": "Configured natively",
+                        "ServerPassword": "keep-me",
+                        "ServerID": "native-world",
+                        "MaxPlayers": 23,
+                        "EnableEAC": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            momlib.apply_server_compatibility(
+                server, "127.0.0.1", 8080, "abcd"
+            )
+
+            updated = json.loads(config.read_text(encoding="utf-8"))
+            self.assertEqual(updated["ServerName"], "Configured natively")
+            self.assertEqual(updated["ServerPassword"], "keep-me")
+            self.assertEqual(updated["ServerID"], "native-world")
+            self.assertEqual(updated["MaxPlayers"], 23)
+            self.assertFalse(updated["EnableEAC"])
+
+    def test_server_openssl_compatibility_is_enabled_by_default(self):
+        env = momlib.server_environment({}, {"KEEP": "yes"})
+
+        self.assertEqual(env["OPENSSL_ia32cap"], ":~0x20000000")
+        self.assertEqual(env["KEEP"], "yes")
+
+    def test_server_openssl_compatibility_can_be_disabled(self):
+        env = momlib.server_environment(
+            {"server_openssl_compat": False}, {"KEEP": "yes"}
+        )
+
+        self.assertNotIn("OPENSSL_ia32cap", env)
 
     def test_client_launcher_replaces_eac_and_restores_exactly(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -379,6 +422,23 @@ class BackendTests(unittest.TestCase):
 
 
 class ManagerTests(unittest.TestCase):
+    def test_managed_launch_applies_server_openssl_environment(self):
+        settings = {
+            "server_dir": "C:/server",
+            "server_openssl_compat": True,
+        }
+        process = mock.Mock(pid=123)
+        with (
+            mock.patch("server_manager._restore_system_dll_search"),
+            mock.patch("server_manager.subprocess.Popen", return_value=process) as popen,
+        ):
+            result = server_manager._launch_server_process(settings)
+
+        self.assertIs(result, process)
+        self.assertEqual(
+            popen.call_args.kwargs["env"]["OPENSSL_ia32cap"], ":~0x20000000"
+        )
+
     def test_managed_world_exit_triggers_automatic_restart(self):
         manager = server_manager.ServerManager.__new__(server_manager.ServerManager)
         manager.starting = False
@@ -434,6 +494,26 @@ class ManagerTests(unittest.TestCase):
             self.assertRaises(server_manager.IncompatibleBackendError),
         ):
             manager._fetch_status()
+
+
+class NativeServerTests(unittest.TestCase):
+    def test_prepare_uses_compatibility_only(self):
+        settings = {
+            "server_dir": "C:/server",
+            "server_backend_host": "127.0.0.1",
+            "backend_port": 8080,
+            "access_key": "abcd",
+            "skip_cloning": True,
+        }
+        with mock.patch(
+            "native_server.momlib.apply_server_compatibility",
+            return_value={"url": "http://127.0.0.1", "config": "server.cfg"},
+        ) as apply_compatibility:
+            native_server._prepare(settings)
+
+        apply_compatibility.assert_called_once_with(
+            "C:/server", "127.0.0.1", 8080, "abcd", skip_cloning=True
+        )
 
 
 if __name__ == "__main__":
