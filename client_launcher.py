@@ -54,6 +54,18 @@ def _game_root() -> Path:
     return Path(override).resolve() if override else Path(sys.executable).resolve().parent
 
 
+def _restore_system_dll_search() -> None:
+    """Prevent an external game process from loading DLLs from PyInstaller."""
+    if os.name != "nt":
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetDllDirectoryW.argtypes = (ctypes.c_wchar_p,)
+    kernel32.SetDllDirectoryW.restype = ctypes.c_int
+    if not kernel32.SetDllDirectoryW(None):
+        code = ctypes.get_last_error()
+        raise OSError(code, "Windows could not restore the system DLL search path")
+
+
 def _set_affinity(process: subprocess.Popen, mask: int) -> None:
     if os.name != "nt":
         return
@@ -86,6 +98,11 @@ def main() -> int:
         env["OPENSSL_ia32cap"] = ":~0x20000000"
 
     try:
+        # PyInstaller points child processes at its one-file extraction folder
+        # unless the normal Windows DLL search path is restored first. Without
+        # this, the game keeps _MEI...\VCRUNTIME140.dll loaded and the launcher
+        # cannot remove its temporary directory when it exits.
+        _restore_system_dll_search()
         game = subprocess.Popen(
             [str(exe), "-NoEAC", "-console"], cwd=str(exe.parent), env=env
         )

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import backend
+import client_launcher
 import momlib
 import redirect_urls
 import server_manager
@@ -27,6 +28,27 @@ def fake_exe(path: Path):
         + AWS_URL.encode("utf-16le")
         + b"\0\0end"
     )
+
+
+class ClientLauncherTests(unittest.TestCase):
+    @unittest.skipUnless(client_launcher.os.name == "nt", "Windows-only behavior")
+    def test_external_game_uses_the_system_dll_search_path(self):
+        kernel32 = mock.MagicMock()
+        kernel32.SetDllDirectoryW.return_value = 1
+        with mock.patch("client_launcher.ctypes.WinDLL", return_value=kernel32):
+            client_launcher._restore_system_dll_search()
+        kernel32.SetDllDirectoryW.assert_called_once_with(None)
+
+    @unittest.skipUnless(client_launcher.os.name == "nt", "Windows-only behavior")
+    def test_dll_search_restore_failure_is_not_ignored(self):
+        kernel32 = mock.MagicMock()
+        kernel32.SetDllDirectoryW.return_value = 0
+        with (
+            mock.patch("client_launcher.ctypes.WinDLL", return_value=kernel32),
+            mock.patch("client_launcher.ctypes.get_last_error", return_value=5),
+        ):
+            with self.assertRaisesRegex(OSError, "DLL search path"):
+                client_launcher._restore_system_dll_search()
 
 
 class BinaryPatchTests(unittest.TestCase):

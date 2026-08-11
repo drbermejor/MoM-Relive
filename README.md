@@ -5,7 +5,7 @@ An unofficial community replacement for the retired online services used by
 in the in-game browser, connect without EAC, and keep world and character
 progress on the server machine.
 
-Current version: **0.5.0**. Tested on Windows 11 with the Steam client and the
+Current version: **0.5.1**. Tested on Windows 11 with the Steam client and the
 Steam dedicated-server installation.
 
 > This project does not contain or redistribute the game, game assets, Steam
