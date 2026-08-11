@@ -11,6 +11,9 @@ Steam dedicated-server installation.
 > This project does not contain or redistribute the game, game assets, Steam
 > files, EAC files, or saved games. You must own and install Memories of Mars
 > and its dedicated server separately.
+>
+> See the project [legal notice](LEGAL.md) for its unofficial status, intended
+> scope, privacy information, and user responsibilities.
 
 ## What works
 
@@ -172,4 +175,4 @@ Important compatibility details discovered during recovery:
 
 The original code in this repository is released under the GNU General Public
 License v3.0. This license does not grant rights to Memories of Mars or any
-third-party software.
+third-party software. See [LEGAL.md](LEGAL.md) for the complete project notice.
