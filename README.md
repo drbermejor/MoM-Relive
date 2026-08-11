@@ -155,11 +155,6 @@ The local backend reproduces the response shapes required by the original game.
 
 Important compatibility details discovered during recovery:
 
-- The session `BaseURL` must be quoted and present twice, once per old region.
-- `GetAllSessions` must return an object containing a `Sessions` array.
-- Login responses require both `accid` and `logintoken`.
-- The dedicated server rebuilds its command line from
-  `DedicatedServerConfig.cfg`, so CLI-only configuration is discarded.
 - The legacy Unreal build can crash while loading on high-thread-count CPUs;
   the client launcher can temporarily restrict CPU affinity during startup.
 
