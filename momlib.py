@@ -10,6 +10,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -23,13 +24,23 @@ from urllib.parse import urlsplit
 import redirect_urls
 
 APP_NAME = "MoM Revival"
-CLIENT_EXE_REL = Path("MarsClient/Game/Binaries/Win64/MemoriesOfMars.exe")
-CLIENT_LAUNCHER_REL = Path("Launch_Game.exe")
-SERVER_EXE_REL = Path("Game/Binaries/Win64/MemoriesOfMarsServer.exe")
-SERVER_ENGINE_REL = Path("Game/Saved/Config/WindowsServer/Engine.ini")
-SERVER_GAME_REL = Path("Game/Saved/Config/WindowsServer/Game.ini")
-SERVER_CFG_REL = Path("DedicatedServerConfig.cfg")
-SERVER_SAVE_REL = Path("Game/Saved/DB")
+if platform.system() == "Linux":
+    CLIENT_EXE_REL = Path("MarsClient/Game/Binaries/Linux/MemoriesOfMars")
+    CLIENT_LAUNCHER_REL = Path("Launch_Game")
+    SERVER_EXE_REL = Path("Game/Binaries/Linux/MemoriesOfMarsServer")
+    SERVER_ENGINE_REL = Path("Game/Saved/Config/LinuxServer/Engine.ini")
+    SERVER_GAME_REL = Path("Game/Saved/Config/Linux/Game.ini")
+    SERVER_CFG_REL = Path("DedicatedServerConfig.cfg")
+    SERVER_SAVE_REL = Path("Game/Saved/DB")
+else:
+    CLIENT_EXE_REL = Path("MarsClient/Game/Binaries/Win64/MemoriesOfMars.exe")
+    CLIENT_LAUNCHER_REL = Path("Launch_Game.exe")
+    SERVER_EXE_REL = Path("Game/Binaries/Win64/MemoriesOfMarsServer.exe")
+    SERVER_ENGINE_REL = Path("Game/Saved/Config/WindowsServer/Engine.ini")
+    SERVER_GAME_REL = Path("Game/Saved/Config/WindowsServer/Game.ini")
+    SERVER_CFG_REL = Path("DedicatedServerConfig.cfg")
+    SERVER_SAVE_REL = Path("Game/Saved/DB")
+
 LIMBIC_SECTION = "OnlineSubsystemLimbic"
 CLONE_SECTIONS = (
     "/Script/ShooterGame.MarsGameMode",

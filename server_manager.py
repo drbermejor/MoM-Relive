@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import signal
 import socket
@@ -24,6 +25,10 @@ from version import __version__
 
 RUNTIME_FILE = momlib.app_data_dir() / "runtime.json"
 
+if platform.system() == "Linux":
+    powershell = "pwsh"
+else:
+    powershell = "powershell"
 
 class IncompatibleBackendError(OSError):
     pass
@@ -44,9 +49,14 @@ def _find_server_console():
         if length:
             title = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(hwnd, title, length + 1)
-            if "MemoriesOfMarsServer.exe" in title.value:
-                matches.append(hwnd)
-                return False
+            if platform.system() == "Linux":
+                if "MemoriesOfMarsServer" in title.value:
+                    matches.append(hwnd)
+                    return False
+            else:
+                if "MemoriesOfMarsServer.exe" in title.value:
+                    matches.append(hwnd)
+                    return False
         return True
 
     user32.EnumWindows(callback, 0)
@@ -1150,7 +1160,7 @@ class ServerManager:
             + "'; if($p){$p | Select-Object ExecutablePath,CommandLine | ConvertTo-Json -Compress}"
         )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
+            [powershell, "-NoProfile", "-Command", script],
             capture_output=True,
             text=True,
             check=False,
@@ -1183,7 +1193,7 @@ class ServerManager:
             "if($c){$c.OwningProcess}"
         )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
+            [powershell, "-NoProfile", "-Command", script],
             capture_output=True,
             text=True,
             check=False,
@@ -1201,7 +1211,7 @@ class ServerManager:
             + "'; if($p){$p.CommandLine}"
         )
         info = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", info_script],
+            [powershell, "-NoProfile", "-Command", info_script],
             capture_output=True,
             text=True,
             check=False,

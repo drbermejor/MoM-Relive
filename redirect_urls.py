@@ -15,21 +15,34 @@ Uso:
 
 import argparse
 import os
+import platform
 import re
 import shutil
 import tempfile
 from pathlib import Path
 
-TARGETS = [
-    Path(
-        r"C:\Program Files (x86)\Steam\steamapps\common\Memories of Mars"
-        r"\MarsClient\Game\Binaries\Win64\MemoriesOfMars.exe"
-    ),
-    Path(
-        r"C:\Program Files (x86)\Steam\steamapps\common\Memories of Mars - Dedicated Server"
-        r"\Game\Binaries\Win64\MemoriesOfMarsServer.exe"
-    ),
-]
+if platform.system() == "Linux":
+    TARGETS = [
+#        Path(
+#            r"~/Steam/steamapps/common/Memories\ of\ Mars/"
+#            r"/MarsClient/Game/Binaries/Linux/MemoriesOfMars"
+#            ),
+        Path(
+            r"~/Steam/steamapps/common/Memories\ of\ Mars\ -\ Dedicated\ Server/"
+            r"/Game/Binaries/Linux/MemoriesOfMarsServer"
+            ),
+        ]
+else:
+    TARGETS = [
+        Path(
+            r"C:\Program Files (x86)\Steam\steamapps\common\Memories of Mars"
+            r"\MarsClient\Game\Binaries\Win64\MemoriesOfMars.exe"
+            ),
+        Path(
+            r"C:\Program Files (x86)\Steam\steamapps\common\Memories of Mars - Dedicated Server"
+            r"\Game\Binaries\Win64\MemoriesOfMarsServer.exe"
+            ),
+        ]
 
 # https://<id>.execute-api.<region>.amazonaws.com/Prod/
 PATTERN = re.compile(
@@ -158,6 +171,8 @@ def patch(path, new_url):
     if len(data) != original.stat().st_size:
         raise PatchError("The patch would change the executable size; cancelled")
     _write_atomic(path, bytes(data))
+    if platform.system() == "Linux":
+        os.chmod(path, 0o755)
     print(f"  => {replaced} URL(s) redirigidas a {new_url}\n")
     return replaced
 
@@ -167,6 +182,8 @@ def restore(path):
     original = path.with_suffix(path.suffix + ".orig")
     if original.exists():
         _write_atomic(path, original.read_bytes())
+        if platform.system() == "Linux":
+            os.chmod(path, 0o755)
         print(f"  restaurado desde {original.name}")
         return True
     else:
