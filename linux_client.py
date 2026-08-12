@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import momlib
@@ -76,7 +77,113 @@ def _steam_root(proton: Path) -> Path:
     raise momlib.ConfigError(f"Could not determine the Steam root from {proton}")
 
 
-def _launch(client_dir: Path, compat_root: Path, proton: Path, settings, extra_args):
+def _prefix_processes(compat_root: Path):
+    marker = b"STEAM_COMPAT_DATA_PATH=" + os.fsencode(str(compat_root))
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            environment = (entry / "environ").read_bytes().split(b"\0")
+        except (OSError, PermissionError):
+            continue
+        if marker in environment:
+            yield int(entry.name)
+
+
+def _process_identity(pid):
+    """Return (Windows executable name, Linux process state) for a prefix PID."""
+    try:
+        argv0 = (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\0", 1)[0]
+        stat = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+    except (OSError, PermissionError, IndexError):
+        return "", ""
+    name = os.fsdecode(argv0).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    # The command name may contain spaces and parentheses, so split after its
+    # final closing parenthesis. The next field is the one-letter state.
+    state_fields = stat.rsplit(")", 1)[-1].strip().split()
+    return name, state_fields[0] if state_fields else ""
+
+
+def _stop_prefix_processes(process, compat_root):
+    """Stop the launcher and Wine processes after the game itself has exited."""
+    targets = set(_prefix_processes(compat_root))
+    targets.discard(os.getpid())
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def _watch_game_process(process, compat_root, stop_event, interval=0.5):
+    """Prevent a dead Windows game from leaving the Proton wrapper waiting."""
+    game_seen = False
+    while not stop_event.wait(interval):
+        if process.poll() is not None:
+            return
+        live_game = False
+        for pid in _prefix_processes(compat_root):
+            name, state = _process_identity(pid)
+            if name == "memoriesofmars.exe" and state and state != "Z":
+                game_seen = True
+                live_game = True
+                break
+        if game_seen and not live_game:
+            print("The game process exited; cleaning up the Proton session.")
+            _stop_prefix_processes(process, compat_root)
+            return
+
+
+def _restore_prefix_affinity(launcher_pid, compat_root, available_cpus):
+    restored = 0
+    for pid in {launcher_pid, *_prefix_processes(compat_root)}:
+        try:
+            os.sched_setaffinity(pid, available_cpus)
+            restored += 1
+        except (OSError, ProcessLookupError):
+            pass
+    if restored:
+        print(f"Client CPU affinity restored for {restored} Proton process(es).")
+
+
+def _limit_cpu_during_load(process, compat_root, settings):
+    if not settings.get("linux_limit_client_cpu", False) or not hasattr(os, "sched_setaffinity"):
+        return None
+    available_cpus = sorted(os.sched_getaffinity(0))
+    if len(available_cpus) <= 8:
+        return None
+    load_cores = max(
+        1,
+        min(int(settings.get("client_load_cores", 4)), len(available_cpus)),
+    )
+    load_seconds = max(15, int(settings.get("client_load_seconds", 75)))
+    os.sched_setaffinity(process.pid, available_cpus[:load_cores])
+    timer = threading.Timer(
+        load_seconds,
+        _restore_prefix_affinity,
+        args=(process.pid, compat_root, available_cpus),
+    )
+    timer.daemon = True
+    timer.start()
+    print(
+        f"Client startup limited to {load_cores} logical CPUs for "
+        f"{load_seconds} seconds."
+    )
+    return timer
+
+
+def _launch(
+    client_dir: Path,
+    compat_root: Path,
+    proton: Path,
+    settings,
+    extra_args,
+    diagnostics=False,
+):
     exe = client_dir / momlib.CLIENT_EXE_REL
     env = os.environ.copy()
     env.update(
@@ -87,6 +194,21 @@ def _launch(client_dir: Path, compat_root: Path, proton: Path, settings, extra_a
             "SteamGameId": STEAM_APP_ID,
         }
     )
+    if settings.get("linux_disable_nvapi", True):
+        # Proton 9+ enables DXVK-NVAPI for all titles. Memories of Mars is a
+        # D3D11 game and does not need it; on AMD it can recurse while the old
+        # UE4 render thread loads assets and terminate the game.
+        env["PROTON_DISABLE_NVAPI"] = "1"
+        print("Proton NVAPI compatibility layer disabled for this game.")
+    else:
+        env.pop("PROTON_DISABLE_NVAPI", None)
+    if diagnostics:
+        diagnostic_dir = momlib.app_data_dir() / "diagnostics"
+        diagnostic_dir.mkdir(parents=True, exist_ok=True)
+        env["PROTON_LOG"] = "1"
+        env["PROTON_LOG_DIR"] = str(diagnostic_dir)
+        env["PROTON_CRASH_REPORT_DIR"] = str(diagnostic_dir)
+        print(f"Proton diagnostics enabled: {diagnostic_dir}")
     if settings.get("openssl_compat", False):
         env["OPENSSL_ia32cap"] = ":~0x20000000"
     command = [str(proton), "run", str(exe), "-NoEAC", "-console", *extra_args]
@@ -97,21 +219,31 @@ def _launch(client_dir: Path, compat_root: Path, proton: Path, settings, extra_a
         env=env,
         start_new_session=True,
     )
-    if settings.get("limit_client_cpu", True) and hasattr(os, "sched_setaffinity"):
-        logical = os.cpu_count() or 1
-        if logical > 8:
-            load_cores = max(1, min(int(settings.get("client_load_cores", 4)), logical))
-            try:
-                os.sched_setaffinity(process.pid, range(load_cores))
-                print(f"Client startup limited to {load_cores} logical CPUs.")
-            except OSError as exc:
-                print(f"CPU affinity warning: {exc}", file=sys.stderr)
+    affinity_timer = None
+    watcher_stop = threading.Event()
+    watcher = threading.Thread(
+        target=_watch_game_process,
+        args=(process, compat_root, watcher_stop),
+        daemon=True,
+    )
+    watcher.start()
+    try:
+        affinity_timer = _limit_cpu_during_load(process, compat_root, settings)
+    except (OSError, ValueError) as exc:
+        print(f"CPU affinity warning: {exc}", file=sys.stderr)
     try:
         return process.wait()
     except KeyboardInterrupt:
         print("\nStopping the Proton client...")
-        os.killpg(process.pid, signal.SIGTERM)
+        _stop_prefix_processes(process, compat_root)
         return process.wait()
+    finally:
+        watcher_stop.set()
+        if affinity_timer is not None:
+            affinity_timer.cancel()
+            _restore_prefix_affinity(
+                process.pid, compat_root, sorted(os.sched_getaffinity(0))
+            )
 
 
 def build_parser():
@@ -125,6 +257,39 @@ def build_parser():
     parser.add_argument("--port", type=int)
     parser.add_argument("--key", help="shared Relive access key")
     parser.add_argument("--account-id", help="numeric identity; blank preserves Steam ID")
+    cpu = parser.add_mutually_exclusive_group()
+    cpu.add_argument(
+        "--limit-cpu",
+        dest="limit_cpu",
+        action="store_true",
+        help="temporarily use fewer CPUs during startup (disabled by default)",
+    )
+    cpu.add_argument(
+        "--no-cpu-limit",
+        dest="limit_cpu",
+        action="store_false",
+        help="disable the optional startup CPU workaround",
+    )
+    parser.set_defaults(limit_cpu=None)
+    nvapi = parser.add_mutually_exclusive_group()
+    nvapi.add_argument(
+        "--disable-nvapi",
+        dest="disable_nvapi",
+        action="store_true",
+        help="disable Proton's NVAPI layer (default; fixes an AMD render crash)",
+    )
+    nvapi.add_argument(
+        "--enable-nvapi",
+        dest="disable_nvapi",
+        action="store_false",
+        help="allow Proton's NVAPI layer, mainly for troubleshooting",
+    )
+    parser.set_defaults(disable_nvapi=None)
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="write a detailed Proton log and crash reports",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true")
     mode.add_argument("--restore", action="store_true")
@@ -168,6 +333,10 @@ def main(argv=None):
                 "proton_path": str(proton),
             }
         )
+        if options.limit_cpu is not None:
+            settings["linux_limit_client_cpu"] = options.limit_cpu
+        if options.disable_nvapi is not None:
+            settings["linux_disable_nvapi"] = options.disable_nvapi
         momlib.save_settings(settings)
         if options.restore:
             result = momlib.restore_client(client_dir, ini_path=ini)
@@ -185,7 +354,14 @@ def main(argv=None):
         client_args = list(options.client_args)
         if client_args[:1] == ["--"]:
             client_args.pop(0)
-        return _launch(client_dir, compat_root, proton, settings, client_args)
+        return _launch(
+            client_dir,
+            compat_root,
+            proton,
+            settings,
+            client_args,
+            diagnostics=options.diagnostics,
+        )
     except (ValueError, OSError, redirect_urls.PatchError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

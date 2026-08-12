@@ -451,7 +451,10 @@ def unlocked_patterns(accid):
     """
     with _lock:
         pids = STATE["patterns"].get(str(accid), [])
-    return {"result": {"accid": str(accid), "pids": pids}}
+    # The shipped parser incorrectly treats an empty JSON array as a complete
+    # deserialization failure. -1 can never be a valid pattern ID and keeps a
+    # new account semantically empty while allowing its callback to complete.
+    return {"result": {"accid": str(accid), "pids": pids or [-1]}}
 
 
 def unlock_pattern(req):

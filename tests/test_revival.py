@@ -412,6 +412,10 @@ class BackendTests(unittest.TestCase):
         _, patterns = self.request("/r/abcd/p/GetUnlockedPatterns/999")
         self.assertEqual(patterns["result"]["accid"], "999")
 
+    def test_empty_pattern_list_uses_parser_compatible_sentinel(self):
+        _, patterns = self.request("/r/abcd/p/GetUnlockedPatterns/empty-account")
+        self.assertEqual(patterns["result"]["pids"], [-1])
+
     def test_public_host_overrides_private_server_address(self):
         backend.ADVERTISE_HOST = "game.example.net"
         _, created = self.request(
@@ -677,6 +681,48 @@ class NativeServerTests(unittest.TestCase):
 
 
 class LinuxClientTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX-only CPU affinity")
+    def test_proton_affinity_is_restored_after_loading(self):
+        process = mock.MagicMock(pid=4321)
+        timer = mock.MagicMock()
+        settings = {
+            "linux_limit_client_cpu": True,
+            "client_load_cores": 4,
+            "client_load_seconds": 75,
+        }
+        with (
+            mock.patch(
+                "linux_client.os.sched_getaffinity",
+                return_value=set(range(2, 14)),
+            ),
+            mock.patch("linux_client.os.sched_setaffinity") as set_affinity,
+            mock.patch("linux_client.threading.Timer", return_value=timer) as create_timer,
+        ):
+            result = linux_client._limit_cpu_during_load(
+                process, Path("/compat"), settings
+            )
+
+        self.assertIs(result, timer)
+        set_affinity.assert_called_once_with(4321, [2, 3, 4, 5])
+        create_timer.assert_called_once_with(
+            75,
+            linux_client._restore_prefix_affinity,
+            args=(4321, Path("/compat"), list(range(2, 14))),
+        )
+        self.assertTrue(timer.daemon)
+        timer.start.assert_called_once_with()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only CPU affinity")
+    def test_proton_cpu_limit_is_disabled_by_default(self):
+        process = mock.MagicMock(pid=4321)
+        with mock.patch("linux_client.os.sched_setaffinity") as set_affinity:
+            result = linux_client._limit_cpu_during_load(
+                process, Path("/compat"), {}
+            )
+
+        self.assertIsNone(result)
+        set_affinity.assert_not_called()
+
     def test_proton_client_uses_the_prefix_windows_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             compat = Path(tmp) / "compatdata/644290"
@@ -723,6 +769,34 @@ class LinuxClientTests(unittest.TestCase):
             env = popen.call_args.kwargs["env"]
             self.assertEqual(env["SteamAppId"], "644290")
             self.assertEqual(env["STEAM_COMPAT_DATA_PATH"], str(compat))
+            self.assertEqual(env["PROTON_DISABLE_NVAPI"], "1")
+
+    def test_nvapi_can_be_explicitly_enabled(self):
+        parser = linux_client.build_parser()
+        self.assertFalse(parser.parse_args(["--enable-nvapi"]).disable_nvapi)
+        self.assertTrue(parser.parse_args(["--disable-nvapi"]).disable_nvapi)
+
+    def test_dead_game_process_stops_the_remaining_prefix(self):
+        process = mock.MagicMock(pid=9876)
+        process.poll.return_value = None
+        stop_event = mock.MagicMock()
+        stop_event.wait.side_effect = [False, False]
+        with (
+            mock.patch(
+                "linux_client._prefix_processes",
+                side_effect=[[100], [100]],
+            ),
+            mock.patch(
+                "linux_client._process_identity",
+                side_effect=[("memoriesofmars.exe", "S"), ("", "")],
+            ),
+            mock.patch("linux_client._stop_prefix_processes") as stop_prefix,
+        ):
+            linux_client._watch_game_process(
+                process, Path("/compat"), stop_event, interval=0
+            )
+
+        stop_prefix.assert_called_once_with(process, Path("/compat"))
 
     def test_foreign_server_key_does_not_replace_local_server_key(self):
         with tempfile.TemporaryDirectory() as tmp:

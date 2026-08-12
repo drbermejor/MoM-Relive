@@ -129,3 +129,16 @@ desktop entry or `mom-relive-client` for Linux sessions.
 mom-relive-client --prepare-only
 mom-relive-client --restore
 ```
+
+CPU affinity is not changed by default on Linux. If a particular processor
+hangs only while the game is starting, `--limit-cpu` temporarily limits the
+Proton prefix and restores all available CPUs after 75 seconds. Use
+`--diagnostics` to save a detailed Proton log under
+`~/.local/share/MoMRevival/diagnostics` while reproducing a crash.
+
+The launcher disables Proton's DXVK-NVAPI layer for Memories of Mars. The game
+does not require NVAPI, and the layer can make its old UE4 render thread recurse
+and terminate while loading the mobile 3D-printer interface on AMD GPUs. Use
+`--enable-nvapi` only to override this compatibility setting for testing. If
+the Windows game process exits abnormally, the launcher also cleans up its
+remaining Proton/Wine processes instead of waiting indefinitely.
