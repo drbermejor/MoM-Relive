@@ -10,6 +10,26 @@ This package prepares and launches both Steam components on x86-64 Linux:
 It contains no game files and does not require Python. Proton is needed only
 for the game client.
 
+## Compatibility and validation status
+
+The release binaries are built in Debian 11 on x86-64, using glibc 2.31 as the
+oldest supported runtime baseline. This is intended to cover Debian 11 or
+newer, Ubuntu 20.04 or newer, and current x86-64 distributions such as Arch
+Linux and CachyOS. A compatible glibc does not by itself guarantee that every
+Steam, Proton, graphics-driver or desktop combination will work.
+
+| Environment | What has been validated |
+|---|---|
+| CachyOS, AMD Radeon RX 9070 XT, Proton Experimental | Full end-to-end test with the real Steam Windows client and native Linux dedicated server: patching, login, server listing, joining, persistence and repeated mobile 3D-printer interaction. |
+| Debian 11.11 container, glibc 2.31 | All three packaged executables start and expose their command-line interface. Steam, Proton and gameplay were not tested in the container. |
+| Ubuntu 20.04 container, glibc 2.31 | All three packaged executables start and expose their command-line interface. Steam, Proton and gameplay were not tested in the container. |
+| Debian/Ubuntu desktop with Steam | Expected to work from the shared glibc baseline, but a complete real-game session has not yet been validated. Reports are welcome. |
+| Vanilla Arch Linux | Expected to behave like the tested Arch-derived CachyOS system, but has not been tested separately. |
+
+Consequently, it is accurate to say that the tools have been smoke-tested on
+Ubuntu 20.04 and Debian 11. It is not yet accurate to claim full Ubuntu or
+Debian gameplay validation.
+
 ## Install
 
 Extract the archive and install it for the current user. This does not require
@@ -142,3 +162,61 @@ and terminate while loading the mobile 3D-printer interface on AMD GPUs. Use
 `--enable-nvapi` only to override this compatibility setting for testing. If
 the Windows game process exits abnormally, the launcher also cleans up its
 remaining Proton/Wine processes instead of waiting indefinitely.
+
+## Troubleshooting
+
+Start with the default settings. In particular, do not add `taskset` or a CPU
+limit unless startup itself fails on a particular machine. To capture a Proton
+log and any available crash report:
+
+```bash
+mom-relive-client --diagnostics
+```
+
+The detailed Proton log is written below
+`~/.local/share/MoMRevival/diagnostics`. The Unreal client log remains in the
+game's `Saved/Logs` directory below Steam's `compatdata/644290` prefix. Server
+and backend output from the user service is available with:
+
+```bash
+journalctl --user -u mom-relive-server -f
+```
+
+If a comparison specifically requires NVAPI, run once with `--enable-nvapi`.
+On the tested AMD system this reproduced a render-thread termination when the
+mobile 3D-printer UI loaded; it is therefore not the normal configuration.
+
+`OPENSSL_ia32cap=:~0x20000000` is a separate server compatibility setting. It
+masks a CPU capability from the old OpenSSL library bundled with the dedicated
+server. It does not restrict CPU affinity and is unrelated to the Proton client
+render crash.
+
+## Notes for maintainers and forks
+
+The retired service URLs are embedded directly in the executables; they are not
+stored in a `.pak`, and an HTTP proxy alone is insufficient. The tested native
+Linux server contains nine URLs: one ASCII string and eight UTF-32LE strings.
+One of the UTF-32LE values is the authentication endpoint beginning with
+`l32aayf7lh`. A patcher that handles only ASCII or UTF-16LE leaves the old
+authentication and other AWS services active.
+
+Binary replacements must remain within the original string slots, retain a NUL
+terminator, preserve the executable size and mode, and always rebuild from the
+pristine `.orig` copy. If Steam replaces an executable, that clean baseline
+must be refreshed before applying the patch again.
+
+The native server command is:
+
+```bash
+MemoriesOfMarsServer Game -log
+```
+
+The `Game` project argument is required on Linux. Compatibility preparation
+must also write the LinuxServer Unreal configuration, redirect both session and
+embedded service URLs, and disable EAC. Normal values in
+`DedicatedServerConfig.cfg` should remain under the server owner's control.
+
+Client and server use the same shared key when they communicate through one
+Relive backend. The configuration deliberately stores client and server
+destinations separately so a player can temporarily select somebody else's
+host and key without rewriting the configuration of their own server.

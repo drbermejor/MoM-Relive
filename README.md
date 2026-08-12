@@ -54,9 +54,12 @@ Release assets are split by operating system:
   Proton client patcher/launcher, XDG user installer, desktop launchers and an
   optional systemd user service.
 
-The Linux archive runs on Ubuntu, Debian, Arch Linux and derivatives such as
-CachyOS. It is built against Debian 11 to retain compatibility with older
-glibc versions.
+The Linux archive is built against Debian 11/glibc 2.31 for compatibility with
+Debian 11+, Ubuntu 20.04+ and current x86-64 distributions. Its packaged tools
+have been smoke-tested in Debian 11 and Ubuntu 20.04 containers; the complete
+Steam client/server flow has been tested on CachyOS. See
+[README-LINUX.md](README-LINUX.md) for the precise validation matrix and known
+Proton compatibility settings.
 
 ## Host a server
 
