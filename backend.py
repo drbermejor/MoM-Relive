@@ -93,12 +93,37 @@ def prune_sessions():
 # --------------------------------------------------------------------------
 # Servicios
 # --------------------------------------------------------------------------
+def _session_identity(session):
+    """Stable identity used to replace a stale advertisement after restart."""
+    address = str(session.get("_private_ip") or session.get("IpAddress") or "")
+    port = str(session.get("Port") or "")
+    if not address or not port:
+        return None
+    server_id = (
+        session.get("Settings", {})
+        .get("MARS_SERVERID", {})
+        .get("Value", "")
+    )
+    return address, port, str(server_id or session.get("OwningUserName") or "")
+
+
 def create_session(body):
     with _lock:
-        sid = str(STATE["next_session_id"])
-        STATE["next_session_id"] += 1
         session = dict(body)
         session["_private_ip"] = session.get("IpAddress", "")
+        identity = _session_identity(session)
+        matching_sids = [
+            existing_sid
+            for existing_sid, existing in STATE["sessions"].items()
+            if identity is not None and _session_identity(existing) == identity
+        ]
+        sid = matching_sids[0] if matching_sids else None
+        replaced = sid is not None
+        for duplicate_sid in matching_sids[1:]:
+            del STATE["sessions"][duplicate_sid]
+        if sid is None:
+            sid = str(STATE["next_session_id"])
+            STATE["next_session_id"] += 1
         if ADVERTISE_HOST:
             session["IpAddress"] = ADVERTISE_HOST
         session["SessionId"] = sid
@@ -107,7 +132,8 @@ def create_session(body):
         save_state()
     name = session.get("OwningUserName", "?")
     addr = f"{session.get('IpAddress')}:{session.get('Port')}"
-    print(f"[+] sesion {sid} creada: {name} @ {addr}")
+    action = "reemplazada" if replaced else "creada"
+    print(f"[+] sesion {sid} {action}: {name} @ {addr}")
     return public_session(session)
 
 
@@ -425,7 +451,10 @@ def unlocked_patterns(accid):
     """
     with _lock:
         pids = STATE["patterns"].get(str(accid), [])
-    return {"result": {"accid": str(accid), "pids": pids}}
+    # The shipped parser incorrectly treats an empty JSON array as a complete
+    # deserialization failure. -1 can never be a valid pattern ID and keeps a
+    # new account semantically empty while allowing its callback to complete.
+    return {"result": {"accid": str(accid), "pids": pids or [-1]}}
 
 
 def unlock_pattern(req):

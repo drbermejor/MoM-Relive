@@ -1,4 +1,6 @@
 import json
+import os
+import signal
 import socket
 import tempfile
 import threading
@@ -12,12 +14,15 @@ from unittest import mock
 
 import backend
 import client_launcher
+import linux_client
+import linux_configure
 import momlib
 import native_server
 import redirect_urls
 import server_manager
 
 AWS_URL = "https://7pxwu4beee.execute-api.eu-west-1.amazonaws.com/Prod/"
+AWS_AUTH_URL = "https://l32aayf7lh.execute-api.eu-central-1.amazonaws.com/Prod/"
 
 
 def fake_exe(path: Path):
@@ -29,6 +34,18 @@ def fake_exe(path: Path):
         + AWS_URL.encode("utf-16le")
         + b"\0\0end"
     )
+
+
+def fake_linux_server(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b"\x7fELF"
+        + AWS_URL.encode("ascii")
+        + b"\0tail"
+        + AWS_AUTH_URL.encode("utf-32le")
+        + b"\0\0\0\0end"
+    )
+    path.chmod(0o755)
 
 
 class ClientLauncherTests(unittest.TestCase):
@@ -85,6 +102,23 @@ class BinaryPatchTests(unittest.TestCase):
             redirect_urls.patch(exe, "http://127.0.0.1:8080/r/abcd/1/")
             redirect_urls.restore(exe)
             self.assertEqual(exe.read_bytes(), updated)
+
+    def test_linux_utf32_urls_and_executable_mode_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "MemoriesOfMarsServer"
+            fake_linux_server(exe)
+            original = exe.read_bytes()
+            url = "http://127.0.0.1:8080/r/abcd/s/"
+
+            replaced = redirect_urls.patch(exe, url)
+
+            self.assertEqual(replaced, 2)
+            self.assertIn(url.encode("ascii"), exe.read_bytes())
+            self.assertIn(url.encode("utf-32le"), exe.read_bytes())
+            self.assertEqual(exe.stat().st_mode & 0o777, 0o755)
+            self.assertTrue(redirect_urls.restore(exe))
+            self.assertEqual(exe.read_bytes(), original)
+            self.assertEqual(exe.stat().st_mode & 0o777, 0o755)
 
 
 class ConfigTests(unittest.TestCase):
@@ -187,6 +221,29 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(updated["ServerID"], "native-world")
             self.assertEqual(updated["MaxPlayers"], 23)
             self.assertFalse(updated["EnableEAC"])
+
+    def test_linux_server_uses_linuxserver_config_and_native_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = Path(tmp) / "server"
+            fake_linux_server(server / momlib.LINUX_SERVER_EXE_REL)
+            config = server / momlib.SERVER_CFG_REL
+            config.write_text(
+                json.dumps({"ServerName": "Linux", "EnableEAC": True}),
+                encoding="utf-8",
+            )
+
+            result = momlib.apply_server_compatibility(
+                server, "127.0.0.1", 8080, "abcd"
+            )
+            command, cwd, layout = momlib.server_launch_spec(server, ["-Port=7778"])
+
+            self.assertEqual(result["platform"], "linux")
+            self.assertTrue((server / momlib.LINUX_SERVER_ENGINE_REL).is_file())
+            self.assertTrue((server / momlib.LINUX_SERVER_GAME_REL).is_file())
+            self.assertFalse((server / "Game/Saved/Config/Linux/Game.ini").exists())
+            self.assertEqual(layout.platform, "linux")
+            self.assertEqual(command[1:], ["Game", "-log", "-Port=7778"])
+            self.assertEqual(cwd, server.resolve())
 
     def test_server_openssl_compatibility_is_enabled_by_default(self):
         env = momlib.server_environment({}, {"KEEP": "yes"})
@@ -356,6 +413,10 @@ class BackendTests(unittest.TestCase):
         _, patterns = self.request("/r/abcd/p/GetUnlockedPatterns/999")
         self.assertEqual(patterns["result"]["accid"], "999")
 
+    def test_empty_pattern_list_uses_parser_compatible_sentinel(self):
+        _, patterns = self.request("/r/abcd/p/GetUnlockedPatterns/empty-account")
+        self.assertEqual(patterns["result"]["pids"], [-1])
+
     def test_public_host_overrides_private_server_address(self):
         backend.ADVERTISE_HOST = "game.example.net"
         _, created = self.request(
@@ -420,6 +481,30 @@ class BackendTests(unittest.TestCase):
         }
         self.assertTrue(backend.prune_sessions())
         self.assertNotIn("dead", backend.STATE["sessions"])
+
+    def test_restart_replaces_the_same_server_advertisement(self):
+        advertisement = {
+            "OwningUserName": "test",
+            "IpAddress": "192.0.2.1",
+            "Port": 7777,
+            "Settings": {
+                "MARS_SERVERID": {"Type": "String", "Value": "world_01"}
+            },
+        }
+        _, first = self.request(
+            "/r/abcd/s/CreateSession", advertisement, "POST"
+        )
+        backend.STATE["sessions"]["stale-duplicate"] = dict(
+            backend.STATE["sessions"][first["SessionId"]]
+        )
+        backend.STATE["sessions"]["stale-duplicate"]["SessionId"] = "stale-duplicate"
+        _, second = self.request(
+            "/r/abcd/s/CreateSession", advertisement, "POST"
+        )
+        _, listed = self.request("/r/abcd/p/GetAllSessions")
+
+        self.assertEqual(first["SessionId"], second["SessionId"])
+        self.assertEqual(len(listed["Sessions"]), 1)
 
 
 class ManagerTests(unittest.TestCase):
@@ -498,6 +583,70 @@ class ManagerTests(unittest.TestCase):
 
 
 class NativeServerTests(unittest.TestCase):
+    def test_server_keeps_its_key_when_client_destination_changes(self):
+        stored = {
+            **momlib.default_settings(),
+            "access_key": "ownserver",
+            "server_access_key": "ownserver",
+            "client_access_key": "theirkey",
+            "server_backend_port": 8080,
+            "client_backend_port": 9090,
+        }
+        options = native_server.build_parser().parse_args(["--prepare-only"])
+        with mock.patch("native_server.momlib.load_settings", return_value=stored):
+            settings = native_server._settings_from_options(options)
+
+        self.assertEqual(settings["access_key"], "ownserver")
+        self.assertEqual(settings["backend_port"], 8080)
+        self.assertEqual(settings["client_access_key"], "theirkey")
+        self.assertEqual(settings["client_backend_port"], 9090)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only process control")
+    def test_linux_world_restarts_after_a_normal_exit(self):
+        first = mock.MagicMock()
+        first.wait.return_value = 0
+        second = mock.MagicMock()
+        second.pid = 4321
+        second.wait.side_effect = [KeyboardInterrupt(), 143]
+        settings = {"server_dir": "/server", "server_openssl_compat": True}
+        with (
+            mock.patch(
+                "native_server.momlib.server_launch_spec",
+                return_value=(
+                    ["/server/MemoriesOfMarsServer", "Game", "-log"],
+                    Path("/server"),
+                    momlib.LINUX_SERVER_LAYOUT,
+                ),
+            ),
+            mock.patch(
+                "native_server.subprocess.Popen", side_effect=[first, second]
+            ) as popen,
+            mock.patch("native_server.time.sleep") as sleep,
+            mock.patch("native_server.os.killpg") as killpg,
+        ):
+            result = native_server._run_server(settings, [], auto_restart=True)
+
+        self.assertEqual(result, 143)
+        self.assertEqual(popen.call_count, 2)
+        sleep.assert_called_once_with(10)
+        killpg.assert_called_once_with(4321, native_server.signal.SIGTERM)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only process isolation")
+    def test_backend_is_isolated_until_the_world_has_stopped(self):
+        settings = {"backend_port": 8080}
+        process = mock.MagicMock()
+        process.poll.return_value = None
+        with (
+            mock.patch("native_server._compatible_backend", side_effect=[False, True]),
+            mock.patch("native_server._port_is_listening", return_value=False),
+            mock.patch("native_server._backend_command", return_value=["backend"]),
+            mock.patch("native_server.subprocess.Popen", return_value=process) as popen,
+            mock.patch("native_server.time.sleep"),
+        ):
+            self.assertIs(native_server._start_backend(settings), process)
+
+        popen.assert_called_once_with(["backend"], start_new_session=True)
+
     def test_prepare_uses_compatibility_only(self):
         settings = {
             "server_dir": "C:/server",
@@ -515,6 +664,255 @@ class NativeServerTests(unittest.TestCase):
         apply_compatibility.assert_called_once_with(
             "C:/server", "127.0.0.1", 8080, "abcd", skip_cloning=True
         )
+
+    def test_restore_is_available_from_the_standalone_launcher(self):
+        settings = {"server_dir": "/server"}
+        with (
+            mock.patch("native_server._settings_from_options", return_value=settings),
+            mock.patch("native_server.momlib.save_settings") as save_settings,
+            mock.patch(
+                "native_server.momlib.restore_server",
+                return_value={"binary_restored": True},
+            ) as restore_server,
+        ):
+            self.assertEqual(native_server.main(["--restore"]), 0)
+
+        save_settings.assert_called_once_with(settings)
+        restore_server.assert_called_once_with("/server")
+
+
+class LinuxClientTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX-only CPU affinity")
+    def test_proton_affinity_is_restored_after_loading(self):
+        process = mock.MagicMock(pid=4321)
+        timer = mock.MagicMock()
+        settings = {
+            "linux_limit_client_cpu": True,
+            "client_load_cores": 4,
+            "client_load_seconds": 75,
+        }
+        with (
+            mock.patch(
+                "linux_client.os.sched_getaffinity",
+                return_value=set(range(2, 14)),
+            ),
+            mock.patch("linux_client.os.sched_setaffinity") as set_affinity,
+            mock.patch("linux_client.threading.Timer", return_value=timer) as create_timer,
+        ):
+            result = linux_client._limit_cpu_during_load(
+                process, Path("/compat"), settings
+            )
+
+        self.assertIs(result, timer)
+        set_affinity.assert_called_once_with(4321, [2, 3, 4, 5])
+        create_timer.assert_called_once_with(
+            75,
+            linux_client._restore_prefix_affinity,
+            args=(4321, Path("/compat"), list(range(2, 14))),
+        )
+        self.assertTrue(timer.daemon)
+        timer.start.assert_called_once_with()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only CPU affinity")
+    def test_proton_cpu_limit_is_disabled_by_default(self):
+        process = mock.MagicMock(pid=4321)
+        with mock.patch("linux_client.os.sched_setaffinity") as set_affinity:
+            result = linux_client._limit_cpu_during_load(
+                process, Path("/compat"), {}
+            )
+
+        self.assertIsNone(result)
+        set_affinity.assert_not_called()
+
+    def test_proton_client_uses_the_prefix_windows_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            compat = Path(tmp) / "compatdata/644290"
+            local = compat / "pfx/drive_c/users/steamuser/AppData/Local"
+            local.mkdir(parents=True)
+
+            self.assertEqual(
+                linux_client._client_ini(compat),
+                local / "MemoriesOfMars/Saved/Config/WindowsNoEditor/Engine.ini",
+            )
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only Proton process control")
+    def test_proton_launch_bypasses_eac(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = root / "steamapps/common/Memories of Mars"
+            exe = client / momlib.CLIENT_EXE_REL
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"MZ")
+            proton = root / "steamapps/common/Proton/proton"
+            proton.parent.mkdir(parents=True)
+            proton.write_text("", encoding="utf-8")
+            compat = root / "steamapps/compatdata/644290"
+            process = mock.MagicMock()
+            process.pid = 9876
+            process.wait.return_value = 0
+            with (
+                mock.patch("linux_client.subprocess.Popen", return_value=process) as popen,
+                mock.patch("linux_client.os.cpu_count", return_value=4),
+            ):
+                result = linux_client._launch(
+                    client,
+                    compat,
+                    proton,
+                    {"limit_client_cpu": True},
+                    ["-windowed"],
+                )
+
+            self.assertEqual(result, 0)
+            command = popen.call_args.args[0]
+            self.assertEqual(command[0:2], [str(proton), "run"])
+            self.assertIn("-NoEAC", command)
+            self.assertIn("-windowed", command)
+            env = popen.call_args.kwargs["env"]
+            self.assertEqual(env["SteamAppId"], "644290")
+            self.assertEqual(env["STEAM_COMPAT_DATA_PATH"], str(compat))
+            self.assertEqual(env["PROTON_DISABLE_NVAPI"], "1")
+
+    def test_nvapi_can_be_explicitly_enabled(self):
+        parser = linux_client.build_parser()
+        self.assertFalse(parser.parse_args(["--enable-nvapi"]).disable_nvapi)
+        self.assertTrue(parser.parse_args(["--disable-nvapi"]).disable_nvapi)
+
+    def test_dead_game_process_stops_the_remaining_prefix(self):
+        process = mock.MagicMock(pid=9876)
+        process.poll.return_value = None
+        stop_event = mock.MagicMock()
+        stop_event.wait.side_effect = [False, False]
+        with (
+            mock.patch(
+                "linux_client._prefix_processes",
+                side_effect=[[100], [100]],
+            ),
+            mock.patch(
+                "linux_client._process_identity",
+                side_effect=[("memoriesofmars.exe", "S"), ("", "")],
+            ),
+            mock.patch("linux_client._stop_prefix_processes") as stop_prefix,
+        ):
+            linux_client._watch_game_process(
+                process, Path("/compat"), stop_event, interval=0
+            )
+
+        stop_prefix.assert_called_once_with(process, Path("/compat"))
+
+    def test_prefix_cleanup_escalates_when_wine_ignores_sigterm(self):
+        process = mock.MagicMock(pid=9876)
+        with (
+            mock.patch(
+                "linux_client._prefix_processes",
+                side_effect=[[100], [100]],
+            ),
+            mock.patch(
+                "linux_client._process_identity",
+                return_value=("wineserver", "S"),
+            ),
+            mock.patch("linux_client.os.kill") as kill,
+            mock.patch("linux_client.os.killpg") as killpg,
+        ):
+            linux_client._stop_prefix_processes(
+                process, Path("/compat"), grace_seconds=0
+            )
+
+        self.assertEqual(
+            kill.call_args_list,
+            [mock.call(100, signal.SIGTERM), mock.call(100, signal.SIGKILL)],
+        )
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                mock.call(9876, signal.SIGTERM),
+                mock.call(9876, signal.SIGKILL),
+            ],
+        )
+
+    def test_foreign_server_key_does_not_replace_local_server_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client_dir = root / "client"
+            exe = client_dir / momlib.CLIENT_EXE_REL
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"MZ")
+            compat = root / "compatdata/644290"
+            proton = root / "Proton/proton"
+            saved = {}
+            settings = {
+                "access_key": "ownserver",
+                "server_access_key": "ownserver",
+                "backend_port": 8080,
+            }
+            with (
+                mock.patch("linux_client.momlib.load_settings", return_value=settings),
+                mock.patch(
+                    "linux_client.momlib.discover_installs",
+                    return_value=(client_dir, None),
+                ),
+                mock.patch("linux_client._compat_root", return_value=compat),
+                mock.patch("linux_client._proton_path", return_value=proton),
+                mock.patch("linux_client.momlib.save_settings", side_effect=lambda value: saved.update(value)),
+                mock.patch(
+                    "linux_client.momlib.apply_client",
+                    return_value={"url": "http://other.example/r/theirkey/p/"},
+                ),
+            ):
+                result = linux_client.main(
+                    [
+                        "--prepare-only",
+                        "--host",
+                        "other.example",
+                        "--port",
+                        "9090",
+                        "--key",
+                        "theirkey",
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(saved["server_access_key"], "ownserver")
+            self.assertEqual(saved["access_key"], "ownserver")
+            self.assertEqual(saved["client_access_key"], "theirkey")
+            self.assertEqual(saved["client_backend_port"], 9090)
+
+
+class LinuxConfigureTests(unittest.TestCase):
+    def test_shared_contract_is_forwarded_to_client_and_server(self):
+        settings = {
+            "client_backend_host": "relive.example",
+            "client_backend_port": 9000,
+            "client_access_key": "samekey",
+        }
+        with (
+            mock.patch("linux_configure.native_server.main", return_value=0) as server,
+            mock.patch("linux_configure.linux_client.main", return_value=0) as client,
+            mock.patch("linux_configure.momlib.load_settings", return_value=settings),
+        ):
+            result = linux_configure.main(
+                [
+                    "--host",
+                    "relive.example",
+                    "--port",
+                    "9000",
+                    "--key",
+                    "samekey",
+                    "--server-dir",
+                    "/server",
+                    "--client-dir",
+                    "/client",
+                    "--compat-dir",
+                    "/compat",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        server_args = server.call_args.args[0]
+        client_args = client.call_args.args[0]
+        self.assertEqual(server_args[server_args.index("--key") + 1], "samekey")
+        self.assertEqual(client_args[client_args.index("--key") + 1], "samekey")
+        self.assertEqual(server_args[server_args.index("--port") + 1], "9000")
+        self.assertEqual(client_args[client_args.index("--port") + 1], "9000")
 
 
 if __name__ == "__main__":
