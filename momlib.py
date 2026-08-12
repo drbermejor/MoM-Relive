@@ -203,7 +203,7 @@ def save_settings(settings: dict, path: Path | None = None) -> Path:
     return path
 
 
-def _steam_roots() -> list[Path]:
+def steam_roots() -> list[Path]:
     roots: list[Path] = []
     candidates = [
         Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Steam",
@@ -252,7 +252,7 @@ def _steam_roots() -> list[Path]:
 
 def discover_installs() -> tuple[Path | None, Path | None]:
     client = server = None
-    for root in _steam_roots():
+    for root in steam_roots():
         common = root / "steamapps/common"
         c = common / "Memories of Mars"
         s = common / "Memories of Mars - Dedicated Server"

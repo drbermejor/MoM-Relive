@@ -13,6 +13,8 @@ from unittest import mock
 
 import backend
 import client_launcher
+import linux_client
+import linux_configure
 import momlib
 import native_server
 import redirect_urls
@@ -475,6 +477,30 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(backend.prune_sessions())
         self.assertNotIn("dead", backend.STATE["sessions"])
 
+    def test_restart_replaces_the_same_server_advertisement(self):
+        advertisement = {
+            "OwningUserName": "test",
+            "IpAddress": "192.0.2.1",
+            "Port": 7777,
+            "Settings": {
+                "MARS_SERVERID": {"Type": "String", "Value": "world_01"}
+            },
+        }
+        _, first = self.request(
+            "/r/abcd/s/CreateSession", advertisement, "POST"
+        )
+        backend.STATE["sessions"]["stale-duplicate"] = dict(
+            backend.STATE["sessions"][first["SessionId"]]
+        )
+        backend.STATE["sessions"]["stale-duplicate"]["SessionId"] = "stale-duplicate"
+        _, second = self.request(
+            "/r/abcd/s/CreateSession", advertisement, "POST"
+        )
+        _, listed = self.request("/r/abcd/p/GetAllSessions")
+
+        self.assertEqual(first["SessionId"], second["SessionId"])
+        self.assertEqual(len(listed["Sessions"]), 1)
+
 
 class ManagerTests(unittest.TestCase):
     def test_managed_launch_applies_server_openssl_environment(self):
@@ -552,6 +578,24 @@ class ManagerTests(unittest.TestCase):
 
 
 class NativeServerTests(unittest.TestCase):
+    def test_server_keeps_its_key_when_client_destination_changes(self):
+        stored = {
+            **momlib.default_settings(),
+            "access_key": "ownserver",
+            "server_access_key": "ownserver",
+            "client_access_key": "theirkey",
+            "server_backend_port": 8080,
+            "client_backend_port": 9090,
+        }
+        options = native_server.build_parser().parse_args(["--prepare-only"])
+        with mock.patch("native_server.momlib.load_settings", return_value=stored):
+            settings = native_server._settings_from_options(options)
+
+        self.assertEqual(settings["access_key"], "ownserver")
+        self.assertEqual(settings["backend_port"], 8080)
+        self.assertEqual(settings["client_access_key"], "theirkey")
+        self.assertEqual(settings["client_backend_port"], 9090)
+
     @unittest.skipUnless(os.name == "posix", "POSIX-only process control")
     def test_linux_world_restarts_after_a_normal_exit(self):
         first = mock.MagicMock()
@@ -630,6 +674,140 @@ class NativeServerTests(unittest.TestCase):
 
         save_settings.assert_called_once_with(settings)
         restore_server.assert_called_once_with("/server")
+
+
+class LinuxClientTests(unittest.TestCase):
+    def test_proton_client_uses_the_prefix_windows_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            compat = Path(tmp) / "compatdata/644290"
+            local = compat / "pfx/drive_c/users/steamuser/AppData/Local"
+            local.mkdir(parents=True)
+
+            self.assertEqual(
+                linux_client._client_ini(compat),
+                local / "MemoriesOfMars/Saved/Config/WindowsNoEditor/Engine.ini",
+            )
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only Proton process control")
+    def test_proton_launch_bypasses_eac(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = root / "steamapps/common/Memories of Mars"
+            exe = client / momlib.CLIENT_EXE_REL
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"MZ")
+            proton = root / "steamapps/common/Proton/proton"
+            proton.parent.mkdir(parents=True)
+            proton.write_text("", encoding="utf-8")
+            compat = root / "steamapps/compatdata/644290"
+            process = mock.MagicMock()
+            process.pid = 9876
+            process.wait.return_value = 0
+            with (
+                mock.patch("linux_client.subprocess.Popen", return_value=process) as popen,
+                mock.patch("linux_client.os.cpu_count", return_value=4),
+            ):
+                result = linux_client._launch(
+                    client,
+                    compat,
+                    proton,
+                    {"limit_client_cpu": True},
+                    ["-windowed"],
+                )
+
+            self.assertEqual(result, 0)
+            command = popen.call_args.args[0]
+            self.assertEqual(command[0:2], [str(proton), "run"])
+            self.assertIn("-NoEAC", command)
+            self.assertIn("-windowed", command)
+            env = popen.call_args.kwargs["env"]
+            self.assertEqual(env["SteamAppId"], "644290")
+            self.assertEqual(env["STEAM_COMPAT_DATA_PATH"], str(compat))
+
+    def test_foreign_server_key_does_not_replace_local_server_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client_dir = root / "client"
+            exe = client_dir / momlib.CLIENT_EXE_REL
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"MZ")
+            compat = root / "compatdata/644290"
+            proton = root / "Proton/proton"
+            saved = {}
+            settings = {
+                "access_key": "ownserver",
+                "server_access_key": "ownserver",
+                "backend_port": 8080,
+            }
+            with (
+                mock.patch("linux_client.momlib.load_settings", return_value=settings),
+                mock.patch(
+                    "linux_client.momlib.discover_installs",
+                    return_value=(client_dir, None),
+                ),
+                mock.patch("linux_client._compat_root", return_value=compat),
+                mock.patch("linux_client._proton_path", return_value=proton),
+                mock.patch("linux_client.momlib.save_settings", side_effect=lambda value: saved.update(value)),
+                mock.patch(
+                    "linux_client.momlib.apply_client",
+                    return_value={"url": "http://other.example/r/theirkey/p/"},
+                ),
+            ):
+                result = linux_client.main(
+                    [
+                        "--prepare-only",
+                        "--host",
+                        "other.example",
+                        "--port",
+                        "9090",
+                        "--key",
+                        "theirkey",
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(saved["server_access_key"], "ownserver")
+            self.assertEqual(saved["access_key"], "ownserver")
+            self.assertEqual(saved["client_access_key"], "theirkey")
+            self.assertEqual(saved["client_backend_port"], 9090)
+
+
+class LinuxConfigureTests(unittest.TestCase):
+    def test_shared_contract_is_forwarded_to_client_and_server(self):
+        settings = {
+            "client_backend_host": "relive.example",
+            "client_backend_port": 9000,
+            "client_access_key": "samekey",
+        }
+        with (
+            mock.patch("linux_configure.native_server.main", return_value=0) as server,
+            mock.patch("linux_configure.linux_client.main", return_value=0) as client,
+            mock.patch("linux_configure.momlib.load_settings", return_value=settings),
+        ):
+            result = linux_configure.main(
+                [
+                    "--host",
+                    "relive.example",
+                    "--port",
+                    "9000",
+                    "--key",
+                    "samekey",
+                    "--server-dir",
+                    "/server",
+                    "--client-dir",
+                    "/client",
+                    "--compat-dir",
+                    "/compat",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        server_args = server.call_args.args[0]
+        client_args = client.call_args.args[0]
+        self.assertEqual(server_args[server_args.index("--key") + 1], "samekey")
+        self.assertEqual(client_args[client_args.index("--key") + 1], "samekey")
+        self.assertEqual(server_args[server_args.index("--port") + 1], "9000")
+        self.assertEqual(client_args[client_args.index("--port") + 1], "9000")
 
 
 if __name__ == "__main__":

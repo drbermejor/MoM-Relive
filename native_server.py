@@ -100,12 +100,20 @@ def _start_backend(settings):
 
 def _settings_from_options(options):
     settings = momlib.load_settings()
+    server_port = (
+        options.port
+        if options.port is not None
+        else settings.get("server_backend_port", settings["backend_port"])
+    )
+    server_key = (
+        options.key
+        if options.key is not None
+        else settings.get("server_access_key", settings["access_key"])
+    )
     overrides = {
         "server_dir": options.server_dir,
         "server_backend_host": options.backend_host,
         "backend_bind": options.bind,
-        "backend_port": options.port,
-        "access_key": options.key,
         "public_ip": options.public_ip,
     }
     settings.update({key: value for key, value in overrides.items() if value is not None})
@@ -113,8 +121,10 @@ def _settings_from_options(options):
         settings["skip_cloning"] = False
     if options.disable_openssl_fix:
         settings["server_openssl_compat"] = False
-    settings["backend_port"] = momlib.validate_port(settings["backend_port"])
-    settings["access_key"] = momlib.validate_key(settings["access_key"])
+    settings["backend_port"] = momlib.validate_port(server_port)
+    settings["access_key"] = momlib.validate_key(server_key)
+    settings["server_backend_port"] = settings["backend_port"]
+    settings["server_access_key"] = settings["access_key"]
     settings["backend_bind"] = str(settings["backend_bind"]).strip()
     settings["server_backend_host"] = str(settings["server_backend_host"]).strip()
     if not settings["backend_bind"] or not settings["server_backend_host"]:

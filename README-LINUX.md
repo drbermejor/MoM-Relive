@@ -1,16 +1,63 @@
 # MoM Relive — native Linux server
 
-This package runs the Steam **Memories of Mars - Dedicated Server** build
-natively on x86-64 Linux. It contains no game files and does not require Wine
-or Python.
+This package prepares and launches both Steam components on x86-64 Linux:
+
+- `mom-relive-server` runs the dedicated server as a native Linux process.
+- `mom-relive-client` patches the Windows client and launches it through the
+  installed Steam Proton runtime without EAC.
+- `mom-relive-configure` applies the same host, port and shared key to both.
+
+It contains no game files and does not require Python. Proton is needed only
+for the game client.
+
+## Install
+
+Extract the archive and install it for the current user. This does not require
+`sudo`:
+
+```bash
+./install_linux.sh
+```
+
+It installs `mom-relive-server` in `~/.local/bin`, adds a desktop launcher and
+provides an optional `systemd --user` service. It also installs
+`mom-relive-client`, `mom-relive-configure` and their desktop launchers.
+Uninstalling preserves settings, saves and game backups:
+
+```bash
+./install_linux.sh --uninstall
+```
 
 ## Start
+
+Configure both components together first:
+
+```bash
+mom-relive-configure --host 127.0.0.1 --port 8080 --key YOUR_SHARED_KEY
+```
+
+Changing the shared key requires running this command again and restarting the
+server. The matching client and server values are persisted in
+`~/.local/share/MoMRevival/config.json`.
+
+To connect this client temporarily to somebody else's server, change only its
+destination. The local server host, port and key are left untouched:
+
+```bash
+mom-relive-configure --client-only \
+  --host OTHER_SERVER_ADDRESS --port 8080 --key THEIR_SHARED_KEY
+mom-relive-client
+```
+
+Run the same command with your own server address and key to switch back. On a
+machine that hosts only a server, use `--server-only`; this also allows client
+and server tools to be installed on different Linux machines.
 
 Install the dedicated-server tool through Steam, edit its normal
 `DedicatedServerConfig.cfg`, and run as a normal user:
 
 ```bash
-./MoMNativeServer
+mom-relive-server
 ```
 
 The standard native, Flatpak and Snap Steam locations and additional libraries
@@ -18,7 +65,7 @@ in `steamapps/libraryfolders.vdf` are detected automatically. To select a path
 or set the values shared with Windows clients explicitly:
 
 ```bash
-./MoMNativeServer \
+mom-relive-server \
   --server-dir "$HOME/.local/share/Steam/steamapps/common/Memories of Mars - Dedicated Server" \
   --backend-host 127.0.0.1 \
   --bind 0.0.0.0 \
@@ -38,16 +85,23 @@ Use `Ctrl+C` to stop the world cleanly. Extra arguments after `--` are passed to
 the game server, for example:
 
 ```bash
-./MoMNativeServer -- -Port=7778
+mom-relive-server -- -Port=7778
 ```
 
 ## Maintenance
 
 ```bash
-./MoMNativeServer --prepare-only  # patch only
-./MoMNativeServer --backend-only  # backend only
-./MoMNativeServer --restore       # restore managed changes
-./MoMNativeServer --help
+mom-relive-server --prepare-only  # patch only
+mom-relive-server --backend-only  # backend only
+mom-relive-server --restore       # restore managed changes
+mom-relive-server --help
+```
+
+For an unattended user service after initial configuration:
+
+```bash
+systemctl --user enable --now mom-relive-server
+journalctl --user -u mom-relive-server -f
 ```
 
 Patching is reversible and idempotent. The original ELF executable is kept as
@@ -57,3 +111,21 @@ disabled because it cannot be used with the community backend.
 
 MoM Relive is an unofficial community compatibility project. See `LEGAL.md`
 and `LICENSE` in this package.
+
+## Proton client
+
+Start the game once from Steam so its Proton prefix exists, then run:
+
+```bash
+mom-relive-client --host 127.0.0.1 --port 8080 --key YOUR_SHARED_KEY
+```
+
+The tool patches `MemoriesOfMars.exe`, writes the game's `Engine.ini` inside
+Steam's `compatdata/644290` prefix and launches the real game executable with
+`-NoEAC`. It does not replace Steam's Windows launcher. Use the MoM Relive
+desktop entry or `mom-relive-client` for Linux sessions.
+
+```bash
+mom-relive-client --prepare-only
+mom-relive-client --restore
+```

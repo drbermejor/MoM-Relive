@@ -46,6 +46,18 @@ self-contained and does not require Python. Choose one of these components:
 The applications request administrator rights because Steam commonly installs
 the game below `Program Files (x86)`.
 
+Release assets are split by operating system:
+
+- `MoMRevivalSetup.exe` is the Windows toolkit: client configurator, server
+  manager and native console mode.
+- `MoMRelive-<version>-linux-x86_64.tar.gz` is the Linux toolkit: native server,
+  Proton client patcher/launcher, XDG user installer, desktop launchers and an
+  optional systemd user service.
+
+The Linux archive runs on Ubuntu, Debian, Arch Linux and derivatives such as
+CachyOS. It is built against Debian 11 to retain compatibility with older
+glibc versions.
+
 ## Host a server
 
 1. Install the Steam tool **Memories of Mars - Dedicated Server**.

@@ -24,6 +24,24 @@ $python_bin -m PyInstaller \
   --workpath build/linux \
   --specpath build/linux-spec \
   native_server.py
+$python_bin -m PyInstaller \
+  --clean \
+  --noconfirm \
+  --onefile \
+  --name MoMReliveClient \
+  --distpath dist/linux \
+  --workpath build/linux \
+  --specpath build/linux-spec \
+  linux_client.py
+$python_bin -m PyInstaller \
+  --clean \
+  --noconfirm \
+  --onefile \
+  --name MoMReliveConfigure \
+  --distpath dist/linux \
+  --workpath build/linux \
+  --specpath build/linux-spec \
+  linux_configure.py
 
 package_name="MoMRelive-${version}-linux-x86_64"
 stage_root="$(mktemp -d "${TMPDIR:-/tmp}/mom-relive-release.XXXXXX")"
@@ -31,6 +49,9 @@ trap 'rm -rf -- "$stage_root"' EXIT
 package_dir="$stage_root/$package_name"
 mkdir -p "$package_dir"
 install -m 755 dist/linux/MoMNativeServer "$package_dir/MoMNativeServer"
+install -m 755 dist/linux/MoMReliveClient "$package_dir/MoMReliveClient"
+install -m 755 dist/linux/MoMReliveConfigure "$package_dir/MoMReliveConfigure"
+install -m 755 install_linux.sh "$package_dir/install_linux.sh"
 install -m 644 README-LINUX.md "$package_dir/README-LINUX.md"
 install -m 644 LEGAL.md "$package_dir/LEGAL.md"
 install -m 644 LICENSE "$package_dir/LICENSE"
