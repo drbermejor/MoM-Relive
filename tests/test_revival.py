@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import socket
 import tempfile
 import threading
@@ -797,6 +798,36 @@ class LinuxClientTests(unittest.TestCase):
             )
 
         stop_prefix.assert_called_once_with(process, Path("/compat"))
+
+    def test_prefix_cleanup_escalates_when_wine_ignores_sigterm(self):
+        process = mock.MagicMock(pid=9876)
+        with (
+            mock.patch(
+                "linux_client._prefix_processes",
+                side_effect=[[100], [100]],
+            ),
+            mock.patch(
+                "linux_client._process_identity",
+                return_value=("wineserver", "S"),
+            ),
+            mock.patch("linux_client.os.kill") as kill,
+            mock.patch("linux_client.os.killpg") as killpg,
+        ):
+            linux_client._stop_prefix_processes(
+                process, Path("/compat"), grace_seconds=0
+            )
+
+        self.assertEqual(
+            kill.call_args_list,
+            [mock.call(100, signal.SIGTERM), mock.call(100, signal.SIGKILL)],
+        )
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                mock.call(9876, signal.SIGTERM),
+                mock.call(9876, signal.SIGKILL),
+            ],
+        )
 
     def test_foreign_server_key_does_not_replace_local_server_key(self):
         with tempfile.TemporaryDirectory() as tmp:

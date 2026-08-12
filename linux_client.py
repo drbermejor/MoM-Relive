@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import momlib
@@ -104,7 +105,7 @@ def _process_identity(pid):
     return name, state_fields[0] if state_fields else ""
 
 
-def _stop_prefix_processes(process, compat_root):
+def _stop_prefix_processes(process, compat_root, grace_seconds=2.0):
     """Stop the launcher and Wine processes after the game itself has exited."""
     targets = set(_prefix_processes(compat_root))
     targets.discard(os.getpid())
@@ -115,6 +116,26 @@ def _stop_prefix_processes(process, compat_root):
             pass
     try:
         os.killpg(process.pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+    remaining = targets
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        remaining = {
+            pid
+            for pid in _prefix_processes(compat_root)
+            if pid != os.getpid() and _process_identity(pid)[1] not in {"", "Z"}
+        }
+        if not remaining:
+            return
+        time.sleep(0.1)
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
     except (OSError, ProcessLookupError):
         pass
 
