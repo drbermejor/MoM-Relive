@@ -5,8 +5,8 @@ An unofficial community replacement for the retired online services used by
 in the in-game browser, connect without EAC, and keep world and character
 progress on the server machine.
 
-Current version: **0.6.0**. Tested on Windows 11 with the Steam client and the
-Steam dedicated-server installation.
+Current version: **0.7.0**. Tested on Windows 11 with the Steam client and
+dedicated server, and on the native Steam dedicated server for Linux.
 
 > This project does not contain or redistribute the game, game assets, Steam
 > files, EAC files, or saved games. You must own and install Memories of Mars
@@ -110,6 +110,49 @@ MoMNativeServer.exe --server-dir "D:\Steam\steamapps\common\Memories of Mars - D
 
 Arguments placed after `--` are passed directly to the native server executable.
 
+### Native Linux server
+
+The Linux mode is an addition to the Windows applications above. It uses
+Steam's native ELF server, its normal `DedicatedServerConfig.cfg`, and the same
+Relive backend; no Wine, Windows manager, `/etc/hosts` entry, or HTTPS proxy is
+required.
+
+Requirements are the Steam tool **Memories of Mars - Dedicated Server** and
+Python 3.11 or later. Clone or download this repository on the server, then run:
+
+```bash
+python3 native_server.py
+```
+
+Native, Flatpak and Snap Steam installations are detected automatically. A
+nonstandard Steam library is read from `steamapps/libraryfolders.vdf`;
+alternatively, provide it explicitly:
+
+```bash
+python3 native_server.py \
+  --server-dir "$HOME/.local/share/Steam/steamapps/common/Memories of Mars - Dedicated Server"
+```
+
+Run the launcher as a normal user, not as root. It creates reversible `.orig`
+backups, patches both the ASCII and UTF-32LE service URLs found in the Linux
+binary, preserves its executable permission, writes Unreal settings below
+`Game/Saved/Config/LinuxServer`, starts the backend, and launches the server as
+the official script does: `MemoriesOfMarsServer Game -log`.
+
+Native settings remain in `DedicatedServerConfig.cfg`. To patch without
+starting processes, to run only the backend, or to restore the managed changes:
+
+```bash
+python3 native_server.py --prepare-only
+python3 native_server.py --backend-only
+python3 native_server.py --restore
+```
+
+Use `Ctrl+C` for a clean shutdown. Arguments after `--` go directly to the
+server, for example `python3 native_server.py -- -Port=7778`. The Linux launcher
+restarts the world after its scheduled daily exit by default; use
+`--no-auto-restart` to opt out.
+
 ## Connect a client
 
 1. Install the Steam game **Memories of Mars**.
@@ -165,16 +208,28 @@ preserve the character on reconnect.
 
 Requirements:
 
-- Windows 10 or 11
 - Python 3.11 or later
-- `pyinstaller`
-- Inno Setup 6
+- Windows 10 or 11, `pyinstaller`, and Inno Setup 6 to build the Windows
+  installer
 
 Run:
 
 ```powershell
 python -m unittest discover -s tests -v
 .\build_release.ps1
+```
+
+Build the self-contained x86-64 Linux server package with PyInstaller installed:
+
+```bash
+./build_release_linux.sh
+```
+
+For a broadly compatible release artifact, build against the project's Debian
+11 baseline (Docker required):
+
+```bash
+./build_release_linux_container.sh
 ```
 
 The reproducible outputs are written to `dist\`. Neither `dist\` nor PyInstaller
@@ -188,6 +243,9 @@ python backend.py --access-key ab12cd34 --data-dir "$env:APPDATA\MoMRevival"
 python apply.py client --host 203.0.113.10 --key ab12cd34 --account-id 10001
 python native_server.py --server-dir "C:\path\to\Memories of Mars - Dedicated Server"
 ```
+
+The same `apply.py` and `native_server.py` commands work with a native Linux
+dedicated-server installation.
 
 ## How it works
 

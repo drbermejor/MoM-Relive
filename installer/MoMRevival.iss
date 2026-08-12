@@ -1,6 +1,6 @@
 #define MyAppName "Memories of Mars Revival"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.6.0"
+  #define MyAppVersion "0.7.0"
 #endif
 #define MyAppExeName "MoMRevival.exe"
 

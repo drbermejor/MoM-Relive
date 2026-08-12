@@ -5,8 +5,9 @@ fija dentro del .exe (a diferencia del de sesiones, que se lee de Engine.ini).
 Este script las reescribe in-place.
 
 La cadena nueva es mas corta que la original y se rellena con ceros, de modo
-que wcslen() en tiempo de ejecucion lea la nueva y nada se desplace en el
-binario: el tamano del fichero no cambia ni un byte.
+que la lectura de la cadena termine correctamente y nada se desplace en el
+binario: el tamano del fichero no cambia ni un byte. Los binarios Windows usan
+ASCII/UTF-16LE y el servidor Linux tambien contiene URLs UTF-32LE.
 
 Uso:
     python redirect_urls.py --url http://127.0.0.1:8080/          # aplicar
@@ -17,6 +18,7 @@ import argparse
 import os
 import re
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -41,6 +43,7 @@ ASCII_PATTERN = re.compile(
     re.IGNORECASE,
 )
 UTF16_STRING = re.compile(rb"(?:[\x20-\x7e]\x00){20,}")
+UTF32_STRING = re.compile(rb"(?:[\x20-\x7e]\x00\x00\x00){20,}")
 
 
 class PatchError(RuntimeError):
@@ -49,6 +52,10 @@ class PatchError(RuntimeError):
 
 def _write_atomic(path, data):
     """Sustituye un binario sin dejarlo a medias si falla la escritura."""
+    try:
+        original_mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        original_mode = None
     fd, tmp_name = tempfile.mkstemp(
         prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
     )
@@ -58,6 +65,8 @@ def _write_atomic(path, data):
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp_name, path)
+        if original_mode is not None:
+            os.chmod(path, original_mode)
     except Exception:
         try:
             os.unlink(tmp_name)
@@ -66,25 +75,36 @@ def _write_atomic(path, data):
         raise
 
 
+def _find_encoded_urls(data, block_pattern, label, codec, width):
+    hits = []
+    for block in block_pattern.finditer(data):
+        text = block.group().decode(codec)
+        for match in PATTERN.finditer(text):
+            hits.append(
+                (
+                    label,
+                    block.start() + match.start() * width,
+                    block.start() + match.end() * width,
+                    match.group(),
+                    codec,
+                    b"\x00" * width,
+                )
+            )
+    return hits
+
+
 def _find_urls(data):
-    """Devuelve los huecos ASCII/UTF-16 sin asumir alineacion del binario."""
+    """Devuelve huecos ASCII/UTF-16LE/UTF-32LE sin asumir alineacion."""
     hits = [
         ("ascii", m.start(), m.end(), m.group().decode("ascii"), "latin1", b"\x00")
         for m in ASCII_PATTERN.finditer(data)
     ]
-    for block in UTF16_STRING.finditer(data):
-        text = block.group().decode("utf-16le")
-        for match in PATTERN.finditer(text):
-            hits.append(
-                (
-                    "utf-16",
-                    block.start() + match.start() * 2,
-                    block.start() + match.end() * 2,
-                    match.group(),
-                    "utf-16le",
-                    b"\x00\x00",
-                )
-            )
+    hits.extend(
+        _find_encoded_urls(data, UTF16_STRING, "utf-16", "utf-16le", 2)
+    )
+    hits.extend(
+        _find_encoded_urls(data, UTF32_STRING, "utf-32", "utf-32le", 4)
+    )
     return hits
 
 
@@ -131,7 +151,8 @@ def patch(path, new_url):
         # el .exe cuando la URL nueva era demasiado larga y desplazaba todo
         # el binario. Debe quedar ademas al menos un terminador NUL.
         if len(encoded_url) + len(terminator) > len(needle):
-            limit = (len(needle) - len(terminator)) // (2 if codec == "utf-16le" else 1)
+            width = len("A".encode(codec))
+            limit = (len(needle) - len(terminator)) // width
             raise PatchError(
                 f"URL demasiado larga para {path.name}: {len(new_url)} caracteres "
                 f"(maximo {limit})"

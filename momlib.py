@@ -16,6 +16,7 @@ import shutil
 import socket
 import tempfile
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -25,11 +26,18 @@ import redirect_urls
 APP_NAME = "MoM Revival"
 CLIENT_EXE_REL = Path("MarsClient/Game/Binaries/Win64/MemoriesOfMars.exe")
 CLIENT_LAUNCHER_REL = Path("Launch_Game.exe")
-SERVER_EXE_REL = Path("Game/Binaries/Win64/MemoriesOfMarsServer.exe")
-SERVER_ENGINE_REL = Path("Game/Saved/Config/WindowsServer/Engine.ini")
-SERVER_GAME_REL = Path("Game/Saved/Config/WindowsServer/Game.ini")
 SERVER_CFG_REL = Path("DedicatedServerConfig.cfg")
 SERVER_SAVE_REL = Path("Game/Saved/DB")
+WINDOWS_SERVER_EXE_REL = Path("Game/Binaries/Win64/MemoriesOfMarsServer.exe")
+WINDOWS_SERVER_ENGINE_REL = Path("Game/Saved/Config/WindowsServer/Engine.ini")
+WINDOWS_SERVER_GAME_REL = Path("Game/Saved/Config/WindowsServer/Game.ini")
+LINUX_SERVER_EXE_REL = Path("Game/Binaries/Linux/MemoriesOfMarsServer")
+LINUX_SERVER_ENGINE_REL = Path("Game/Saved/Config/LinuxServer/Engine.ini")
+LINUX_SERVER_GAME_REL = Path("Game/Saved/Config/LinuxServer/Game.ini")
+# Aliases kept for the Windows manager and existing third-party scripts.
+SERVER_EXE_REL = WINDOWS_SERVER_EXE_REL
+SERVER_ENGINE_REL = WINDOWS_SERVER_ENGINE_REL
+SERVER_GAME_REL = WINDOWS_SERVER_GAME_REL
 LIMBIC_SECTION = "OnlineSubsystemLimbic"
 CLONE_SECTIONS = (
     "/Script/ShooterGame.MarsGameMode",
@@ -42,7 +50,61 @@ class ConfigError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class ServerLayout:
+    platform: str
+    exe_rel: Path
+    engine_rel: Path
+    game_rel: Path
+
+
+WINDOWS_SERVER_LAYOUT = ServerLayout(
+    "windows",
+    WINDOWS_SERVER_EXE_REL,
+    WINDOWS_SERVER_ENGINE_REL,
+    WINDOWS_SERVER_GAME_REL,
+)
+LINUX_SERVER_LAYOUT = ServerLayout(
+    "linux",
+    LINUX_SERVER_EXE_REL,
+    LINUX_SERVER_ENGINE_REL,
+    LINUX_SERVER_GAME_REL,
+)
+
+
+def server_layout(server_dir) -> tuple[Path, ServerLayout]:
+    """Resolve a Windows or native Linux dedicated-server installation."""
+    root = Path(server_dir).expanduser().resolve()
+    layouts = (
+        (LINUX_SERVER_LAYOUT, WINDOWS_SERVER_LAYOUT)
+        if os.name == "posix"
+        else (WINDOWS_SERVER_LAYOUT, LINUX_SERVER_LAYOUT)
+    )
+    for layout in layouts:
+        if (root / layout.exe_rel).is_file():
+            return root, layout
+    expected = " or ".join(str(root / layout.exe_rel) for layout in layouts)
+    raise ConfigError(f"Could not find the dedicated server: {expected}")
+
+
+def server_launch_spec(server_dir, extra_args=()) -> tuple[list[str], Path, ServerLayout]:
+    """Return the native command and working directory for the server platform."""
+    root, layout = server_layout(server_dir)
+    exe = root / layout.exe_rel
+    if layout.platform == "linux":
+        # MemoriesOfMarsServer.sh supplies the project name before user args.
+        command = [str(exe), "Game", "-log", *extra_args]
+        cwd = root
+    else:
+        command = [str(exe), "-log", *extra_args]
+        cwd = exe.parent
+    return command, cwd, layout
+
+
 def app_data_dir() -> Path:
+    if os.name == "posix":
+        root = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
+        return Path(root) / "MoMRevival"
     root = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     return Path(root) / "MoMRevival"
 
@@ -147,6 +209,14 @@ def _steam_roots() -> list[Path]:
         Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Steam",
         Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Steam",
     ]
+    if os.name == "posix":
+        candidates = [
+            Path.home() / ".local/share/Steam",
+            Path.home() / ".steam/steam",
+            Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+            Path.home() / "snap/steam/common/.local/share/Steam",
+            *candidates,
+        ]
     try:
         import winreg
 
@@ -188,8 +258,13 @@ def discover_installs() -> tuple[Path | None, Path | None]:
         s = common / "Memories of Mars - Dedicated Server"
         if client is None and (c / CLIENT_EXE_REL).is_file():
             client = c
-        if server is None and (s / SERVER_EXE_REL).is_file():
-            server = s
+        if server is None:
+            try:
+                server_layout(s)
+            except ConfigError:
+                pass
+            else:
+                server = s
     return client, server
 
 
@@ -257,6 +332,10 @@ def _read_text(path: Path) -> str:
 
 def _write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        original_mode = path.stat().st_mode & 0o7777
+    except OSError:
+        original_mode = None
     fd, name = tempfile.mkstemp(
         prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
     )
@@ -266,6 +345,8 @@ def _write_text_atomic(path: Path, text: str) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(name, path)
+        if original_mode is not None:
+            os.chmod(path, original_mode)
     except Exception:
         try:
             os.unlink(name)
@@ -523,15 +604,20 @@ def apply_server_compatibility(
     skip_cloning=True,
 ) -> dict:
     """Apply only Relive compatibility while preserving native world settings."""
-    root = _require_root(server_dir, SERVER_EXE_REL, "the dedicated server")
+    root, layout = server_layout(server_dir)
     url = backend_url(host, port, key, "s")
-    set_limbic_url(root / SERVER_ENGINE_REL, url)
-    set_clone_fix(root / SERVER_GAME_REL, bool(skip_cloning))
+    set_limbic_url(root / layout.engine_rel, url)
+    set_clone_fix(root / layout.game_rel, bool(skip_cloning))
     # EAC cannot be used with the retired official services. All other values
     # remain owned by DedicatedServerConfig.cfg and its native editing flow.
     update_server_cfg(root / SERVER_CFG_REL, {"EnableEAC": False})
-    replaced = redirect_urls.patch(root / SERVER_EXE_REL, url)
-    return {"url": url, "binary_urls": replaced, "config": str(root / SERVER_CFG_REL)}
+    replaced = redirect_urls.patch(root / layout.exe_rel, url)
+    return {
+        "url": url,
+        "binary_urls": replaced,
+        "config": str(root / SERVER_CFG_REL),
+        "platform": layout.platform,
+    }
 
 
 def server_environment(settings: dict, environ=None) -> dict:
@@ -559,16 +645,16 @@ def restore_client(client_dir, ini_path: Path | None = None) -> dict:
 
 
 def restore_server(server_dir) -> dict:
-    root = _require_root(server_dir, SERVER_EXE_REL, "the dedicated server")
-    remove_ini_key(root / SERVER_ENGINE_REL, LIMBIC_SECTION, "BaseURL")
-    set_clone_fix(root / SERVER_GAME_REL, False)
+    root, layout = server_layout(server_dir)
+    remove_ini_key(root / layout.engine_rel, LIMBIC_SECTION, "BaseURL")
+    set_clone_fix(root / layout.game_rel, False)
     update_server_cfg(root / SERVER_CFG_REL, {"EnableEAC": True})
-    restored = redirect_urls.restore(root / SERVER_EXE_REL)
+    restored = redirect_urls.restore(root / layout.exe_rel)
     return {"binary_restored": restored}
 
 
 def backup_server_saves(server_dir, destination: Path | None = None) -> Path:
-    root = _require_root(server_dir, SERVER_EXE_REL, "the dedicated server")
+    root, _layout = server_layout(server_dir)
     source = root / SERVER_SAVE_REL
     if not source.is_dir():
         raise ConfigError(f"Todavia no hay partidas en {source}")
