@@ -15,7 +15,10 @@ import argparse
 import hmac
 import ipaddress
 import json
+import os
 import re
+import secrets
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,6 +31,7 @@ UNKNOWN_LOG = HERE / "unknown_requests.log"
 TRACE_LOG = HERE / "requests.log"
 ACCESS_KEY = ""
 ADVERTISE_HOST = ""
+VEHICLE_SOCKET = ""
 
 # El servidor envia KeepAlive cada unos 10 segundos. Un margen amplio evita
 # falsos positivos durante cargas pesadas y retira anuncios de procesos caidos.
@@ -36,6 +40,8 @@ MAX_BODY = 2 * 1024 * 1024
 STARTED_AT = time.time()
 
 _lock = threading.RLock()
+_vehicle_clients = {}
+_vehicle_rate_limits = {}
 
 
 # --------------------------------------------------------------------------
@@ -270,7 +276,68 @@ def admin_status(req):
         "uptime": max(0, time.time() - STARTED_AT),
         "sessions": sessions,
         "players": players,
+        "vehicle_bridge": bool(VEHICLE_SOCKET),
     }
+
+
+def _active_account_ids():
+    with _lock:
+        return {
+            str(account_id)
+            for session in STATE["sessions"].values()
+            for account_id in session.get("_players", {})
+        }
+
+
+def _vehicle_account(req):
+    """Resolve passthrough clients without trusting an account supplied in JSON."""
+    if req.account_id:
+        return str(req.account_id)
+    if req.identity != "p":
+        return None
+    active = _active_account_ids()
+    candidates = [
+        account_id
+        for account_id, address in _vehicle_clients.items()
+        if address == req.remote_addr and account_id in active
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def vehicle_command(req):
+    if not VEHICLE_SOCKET:
+        return {"result": "unavailable", "message": "vehicle bridge is disabled"}
+    account_id = _vehicle_account(req)
+    if account_id is None or account_id not in _active_account_ids():
+        return {"result": "forbidden", "message": "no unique active player identity"}
+    if not account_id.isdecimal() or int(account_id) > 0xFFFFFFFFFFFFFFFF:
+        return {"result": "forbidden", "message": "invalid active player identity"}
+    action = str((req.json or {}).get("action", "")).strip().lower()
+    if action not in ("spawn", "interact"):
+        return {"result": "invalid", "message": "action must be spawn or interact"}
+
+    now = time.monotonic()
+    minimum_interval = 5.0 if action == "spawn" else 0.35
+    rate_key = account_id, action
+    with _lock:
+        previous = _vehicle_rate_limits.get(rate_key, 0.0)
+        if now - previous < minimum_interval:
+            return {"result": "rate_limited"}
+
+    command_id = secrets.token_hex(8)
+    payload = f"{command_id} {action} {account_id}".encode("ascii")
+    if len(payload) > 128:
+        return {"result": "invalid"}
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as channel:
+            channel.sendto(payload, VEHICLE_SOCKET)
+    except OSError as exc:
+        print(f"[vehicle] bridge unavailable: {exc}")
+        return {"result": "unavailable", "message": "vehicle server mod is not listening"}
+    with _lock:
+        _vehicle_rate_limits[rate_key] = now
+    print(f"[vehicle] {action} requested by {account_id} ({command_id})")
+    return {"result": "queued", "command_id": command_id}
 
 
 def public_session(session):
@@ -328,6 +395,7 @@ R.add("*", r"/GetAllSessions", all_sessions)
 R.add("*", r"/RegisterPlayers", lambda req: register_players(req, True))
 R.add("*", r"/UnregisterPlayers", lambda req: register_players(req, False))
 R.add("GET", r"/AdminStatus", admin_status)
+R.add("POST", r"/VehicleCommand", vehicle_command)
 
 # --- Cuentas y autenticacion
 R.add("*", r"/Login", lambda req: login(req))
@@ -404,6 +472,8 @@ def login(req):
         or "offline"
     )
     acc = account_for(accid)
+    with _lock:
+        _vehicle_clients[accid] = req.remote_addr
     return {
         "result": "ok",
         "message": "",
@@ -640,9 +710,11 @@ def run_server(
     data_dir=None,
     advertise_host="",
 ):
-    global ACCESS_KEY, ADVERTISE_HOST, STATE_FILE, UNKNOWN_LOG, TRACE_LOG, STATE
+    global ACCESS_KEY, ADVERTISE_HOST, VEHICLE_SOCKET
+    global STATE_FILE, UNKNOWN_LOG, TRACE_LOG, STATE
     ACCESS_KEY = access_key
     ADVERTISE_HOST = str(advertise_host or "").strip()
+    VEHICLE_SOCKET = os.environ.get("MOM_VEHICLE_SOCKET", "").strip()
     if data_dir:
         data_dir = Path(data_dir).expanduser().resolve()
         data_dir.mkdir(parents=True, exist_ok=True)

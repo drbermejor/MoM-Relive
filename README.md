@@ -168,6 +168,20 @@ server, for example `python3 native_server.py -- -Port=7778`. The Linux launcher
 restarts the world after its scheduled daily exit by default; use
 `--no-auto-restart` to opt out.
 
+### Optional vehicle test bridge
+
+The server configuration includes a disabled-by-default **Vehicle test
+runtime** section for the companion UE 4.21.2 PhysX vehicle mod. When enabled,
+the world process alone preloads the selected Linux module; the Relive backend
+receives only its local Unix-socket address and never preloads game code.
+
+Do not enable this switch until the matching `LinuxServer` PAK is mounted by
+the dedicated server and the matching `WindowsNoEditor` PAK plus client runtime
+are installed on every Proton/Windows client. Requests are associated with the
+active authenticated account, rate-limited, and forwarded on a mode-0600 local
+socket. Disabling the switch and restarting the world returns to the normal
+server path.
+
 ## Connect a client
 
 1. Install the Steam game **Memories of Mars**.

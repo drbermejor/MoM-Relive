@@ -175,8 +175,8 @@ class ServerConfigDialog:
         self.ttk = manager.ttk
         self.window = self.tk.Toplevel(self.root)
         self.window.title("Dedicated Server Configuration")
-        self.window.geometry("760x660")
-        self.window.minsize(700, 600)
+        self.window.geometry("760x760")
+        self.window.minsize(700, 680)
         self.window.transient(self.root)
         settings = momlib.load_settings()
         legacy_host = settings.get("backend_host", "127.0.0.1")
@@ -195,6 +195,7 @@ class ServerConfigDialog:
             "public_ip",
             "max_players",
             "admin_id",
+            "vehicle_server_library",
         )
         self.vars = {
             key: self.tk.StringVar(value=str(settings.get(key, ""))) for key in keys
@@ -204,6 +205,9 @@ class ServerConfigDialog:
         )
         self.vars["server_openssl_compat"] = self.tk.BooleanVar(
             value=bool(settings.get("server_openssl_compat", True))
+        )
+        self.vars["vehicle_mod_enabled"] = self.tk.BooleanVar(
+            value=bool(settings.get("vehicle_mod_enabled", False))
         )
         self._build()
         if not self.vars["public_ip"].get().strip():
@@ -296,6 +300,31 @@ class ServerConfigDialog:
             justify="left",
         ).grid(row=10, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
+        vehicle_box = ttk.LabelFrame(outer, text="Vehicle test runtime", padding=10)
+        vehicle_box.pack(fill="x", pady=(10, 0))
+        vehicle_check = ttk.Checkbutton(
+            vehicle_box,
+            text="Enable the server-authoritative vehicle module on next world start",
+            variable=self.vars["vehicle_mod_enabled"],
+        )
+        vehicle_check.grid(row=0, column=0, columnspan=3, sticky="w")
+        self._field(
+            vehicle_box,
+            1,
+            "Linux server library",
+            "vehicle_server_library",
+            browse="file",
+        )
+        ttk.Label(
+            vehicle_box,
+            text=(
+                "Keep this off while preparing files. Enabling it requires the matching "
+                "vehicle PAK on both the dedicated server and every client."
+            ),
+            wraplength=680,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(actions, text="Save", command=self.save_only).pack(side="left")
@@ -347,7 +376,8 @@ class ServerConfigDialog:
         entry.grid(row=row, column=1, sticky="ew", pady=3)
         parent.columnconfigure(1, weight=1)
         if browse:
-            ttk.Button(parent, text="Browse...", command=self.browse).grid(
+            command = self.browse if browse is True else self.browse_vehicle_library
+            ttk.Button(parent, text="Browse...", command=command).grid(
                 row=row, column=2, padx=(7, 0)
             )
 
@@ -359,6 +389,18 @@ class ServerConfigDialog:
         )
         if value:
             self.vars["server_dir"].set(value)
+
+    def browse_vehicle_library(self):
+        from tkinter import filedialog
+
+        current = self.vars["vehicle_server_library"].get().strip()
+        value = filedialog.askopenfilename(
+            initialdir=str(Path(current).expanduser().parent) if current else None,
+            filetypes=(("Linux shared library", "*.so"), ("All files", "*")),
+            parent=self.window,
+        )
+        if value:
+            self.vars["vehicle_server_library"].set(value)
 
     def values(self):
         result = dict(self.settings)
@@ -373,6 +415,10 @@ class ServerConfigDialog:
             raise momlib.ConfigError("Select the dedicated-server folder")
         if not str(result["server_backend_host"]).strip():
             raise momlib.ConfigError("Enter the backend address seen by the server")
+        if result.get("vehicle_mod_enabled"):
+            library = Path(str(result.get("vehicle_server_library", ""))).expanduser()
+            if not library.is_file():
+                raise momlib.ConfigError("Select the Linux vehicle server library")
         return result
 
     def _save(self):
@@ -1086,8 +1132,11 @@ class ServerManager:
             )
             if not status:
                 flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                backend_kwargs = {"creationflags": flags}
+                if settings.get("vehicle_mod_enabled"):
+                    backend_kwargs["env"] = momlib.backend_environment(settings)
                 self.backend_process = subprocess.Popen(
-                    _backend_command(settings), creationflags=flags
+                    _backend_command(settings), **backend_kwargs
                 )
             self.starting = True
             self.status_var.set("Starting...")

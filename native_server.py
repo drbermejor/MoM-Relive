@@ -82,6 +82,8 @@ def _start_backend(settings):
         # Ctrl+C the launcher must stop the world first so its final session
         # update and save requests can still reach the backend.
         kwargs["start_new_session"] = True
+    if settings.get("vehicle_mod_enabled"):
+        kwargs["env"] = momlib.backend_environment(settings)
     process = subprocess.Popen(_backend_command(settings), **kwargs)
     for _ in range(50):
         if process.poll() is not None:

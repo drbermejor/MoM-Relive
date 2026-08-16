@@ -139,6 +139,8 @@ def default_settings() -> dict:
         "admin_id": "",
         "skip_cloning": True,
         "server_openssl_compat": True,
+        "vehicle_mod_enabled": False,
+        "vehicle_server_library": "",
     }
 
 
@@ -628,6 +630,29 @@ def server_environment(settings: dict, environ=None) -> dict:
     else:
         # The checkbox must also override a value inherited from the shell.
         env.pop("OPENSSL_ia32cap", None)
+    if settings.get("vehicle_mod_enabled"):
+        library = Path(str(settings.get("vehicle_server_library", ""))).expanduser()
+        if not library.is_file():
+            raise ConfigError(f"Vehicle server library was not found: {library}")
+        socket_path = app_data_dir() / "vehicle" / "commands.sock"
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        env["MOM_VEHICLE_SOCKET"] = str(socket_path)
+        inherited = env.get("LD_PRELOAD", "").strip()
+        env["LD_PRELOAD"] = f"{library.resolve()} {inherited}".strip()
+    else:
+        env.pop("MOM_VEHICLE_SOCKET", None)
+    return env
+
+
+def backend_environment(settings: dict, environ=None) -> dict:
+    """Expose the local vehicle socket to Relive without preloading the game hook."""
+    env = dict(os.environ if environ is None else environ)
+    if settings.get("vehicle_mod_enabled"):
+        socket_path = app_data_dir() / "vehicle" / "commands.sock"
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        env["MOM_VEHICLE_SOCKET"] = str(socket_path)
+    else:
+        env.pop("MOM_VEHICLE_SOCKET", None)
     return env
 
 

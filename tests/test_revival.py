@@ -259,6 +259,25 @@ class ConfigTests(unittest.TestCase):
 
         self.assertNotIn("OPENSSL_ia32cap", env)
 
+    def test_vehicle_bridge_is_disabled_by_default(self):
+        env = momlib.server_environment({}, {"MOM_VEHICLE_SOCKET": "old"})
+        self.assertNotIn("MOM_VEHICLE_SOCKET", env)
+
+    def test_vehicle_bridge_uses_local_socket_and_preloads_only_the_world(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            library = Path(tmp) / "libmom_vehicle_server.so"
+            library.write_bytes(b"ELF-test")
+            settings = {
+                "vehicle_mod_enabled": True,
+                "vehicle_server_library": str(library),
+            }
+            with mock.patch("momlib.app_data_dir", return_value=Path(tmp) / "data"):
+                world = momlib.server_environment(settings, {})
+                backend_env = momlib.backend_environment(settings, {})
+        self.assertEqual(world["LD_PRELOAD"], str(library.resolve()))
+        self.assertEqual(world["MOM_VEHICLE_SOCKET"], backend_env["MOM_VEHICLE_SOCKET"])
+        self.assertNotIn("LD_PRELOAD", backend_env)
+
     def test_client_launcher_replaces_eac_and_restores_exactly(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -368,6 +387,9 @@ class BackendTests(unittest.TestCase):
         backend.STATE = backend._empty_state()
         backend.ACCESS_KEY = "abcd"
         backend.ADVERTISE_HOST = ""
+        backend.VEHICLE_SOCKET = ""
+        backend._vehicle_clients.clear()
+        backend._vehicle_rate_limits.clear()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), backend.Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -505,6 +527,42 @@ class BackendTests(unittest.TestCase):
 
         self.assertEqual(first["SessionId"], second["SessionId"])
         self.assertEqual(len(listed["Sessions"]), 1)
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix socket required")
+    def test_vehicle_command_resolves_passthrough_identity_and_uses_local_bridge(self):
+        socket_path = str(Path(self.tmp.name) / "vehicle.sock")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as listener:
+            listener.bind(socket_path)
+            listener.settimeout(1)
+            backend.VEHICLE_SOCKET = socket_path
+            self.request("/r/abcd/p/Login", {"steamaccid": "12345"}, "POST")
+            _, created = self.request(
+                "/r/abcd/s/CreateSession",
+                {"OwningUserName": "test", "IpAddress": "127.0.0.1", "Port": 7777},
+                "POST",
+            )
+            self.request(
+                "/r/abcd/s/RegisterPlayers",
+                {"SessionId": created["SessionId"], "Players": ["STEAM_12345"]},
+                "PATCH",
+            )
+
+            _, response = self.request(
+                "/r/abcd/p/VehicleCommand", {"action": "spawn"}, "POST"
+            )
+            message = listener.recv(128).decode("ascii").split()
+
+        self.assertEqual(response["result"], "queued")
+        self.assertEqual(message[0], response["command_id"])
+        self.assertEqual(message[1:], ["spawn", "12345"])
+
+    def test_vehicle_command_rejects_an_inactive_or_ambiguous_identity(self):
+        backend.VEHICLE_SOCKET = str(Path(self.tmp.name) / "missing.sock")
+        self.request("/r/abcd/p/Login", {"steamaccid": "12345"}, "POST")
+        _, response = self.request(
+            "/r/abcd/p/VehicleCommand", {"action": "spawn"}, "POST"
+        )
+        self.assertEqual(response["result"], "forbidden")
 
 
 class ManagerTests(unittest.TestCase):
