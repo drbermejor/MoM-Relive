@@ -96,6 +96,8 @@ ln -sfn -- "$installed_configure" "$configure_link"
   printf '%s\n' 'Type=simple'
   printf 'ExecStart="%s"\n' "$installed_binary"
   printf '%s\n' 'KillSignal=SIGINT'
+  printf '%s\n' 'KillMode=mixed'
+  printf '%s\n' 'SuccessExitStatus=130 143'
   printf '%s\n' 'TimeoutStopSec=60'
   printf '%s\n' 'Restart=on-failure'
   printf '%s\n' 'RestartSec=10'
