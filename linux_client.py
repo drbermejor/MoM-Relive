@@ -313,6 +313,11 @@ def build_parser():
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--prepare-only", action="store_true")
+    mode.add_argument(
+        "--launch-prepared",
+        action="store_true",
+        help="launch the current client without rebuilding its prepared executable",
+    )
     mode.add_argument("--restore", action="store_true")
     parser.add_argument("client_args", nargs=argparse.REMAINDER)
     return parser
@@ -367,9 +372,14 @@ def main(argv=None):
                 else "No client binary backup was found."
             )
             return 0
-        result = momlib.apply_client(client_dir, host, port, key, account_id, ini_path=ini)
-        print(f"Proton client prepared: {result['url']}")
-        print(f"Unreal configuration: {ini}")
+        if options.launch_prepared:
+            print("Launching the previously prepared Proton client.")
+        else:
+            result = momlib.apply_client(
+                client_dir, host, port, key, account_id, ini_path=ini
+            )
+            print(f"Proton client prepared: {result['url']}")
+            print(f"Unreal configuration: {ini}")
         if options.prepare_only:
             return 0
         client_args = list(options.client_args)

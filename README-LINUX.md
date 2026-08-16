@@ -150,6 +150,11 @@ mom-relive-client --prepare-only
 mom-relive-client --restore
 ```
 
+Integration frontends that must apply another reversible executable patch after
+Relive preparation can use `--prepare-only`, make and verify their change, then
+run `--launch-prepared`. The latter starts Proton without rebuilding the client
+again; it is not needed for normal standalone use.
+
 CPU affinity is not changed by default on Linux. If a particular processor
 hangs only while the game is starting, `--limit-cpu` temporarily limits the
 Proton prefix and restores all available CPUs after 75 seconds. Use

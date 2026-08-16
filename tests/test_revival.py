@@ -777,6 +777,35 @@ class LinuxClientTests(unittest.TestCase):
         self.assertFalse(parser.parse_args(["--enable-nvapi"]).disable_nvapi)
         self.assertTrue(parser.parse_args(["--disable-nvapi"]).disable_nvapi)
 
+    def test_launch_prepared_does_not_rebuild_the_client_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client_dir = root / "client"
+            exe = client_dir / momlib.CLIENT_EXE_REL
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"MZ-prepared-by-frontend")
+            compat = root / "compatdata/644290"
+            proton = root / "Proton/proton"
+            settings = {"client_dir": str(client_dir)}
+            with (
+                mock.patch("linux_client.momlib.load_settings", return_value=settings),
+                mock.patch(
+                    "linux_client.momlib.discover_installs",
+                    return_value=(client_dir, None),
+                ),
+                mock.patch("linux_client._compat_root", return_value=compat),
+                mock.patch("linux_client._proton_path", return_value=proton),
+                mock.patch("linux_client.momlib.save_settings"),
+                mock.patch("linux_client.momlib.apply_client") as apply_client,
+                mock.patch("linux_client._launch", return_value=0) as launch,
+            ):
+                result = linux_client.main(["--launch-prepared"])
+
+            self.assertEqual(result, 0)
+            apply_client.assert_not_called()
+            launch.assert_called_once()
+            self.assertEqual(exe.read_bytes(), b"MZ-prepared-by-frontend")
+
     def test_dead_game_process_stops_the_remaining_prefix(self):
         process = mock.MagicMock(pid=9876)
         process.poll.return_value = None
