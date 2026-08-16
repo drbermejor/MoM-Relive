@@ -98,7 +98,7 @@ ln -sfn -- "$installed_configure" "$configure_link"
   printf '%s\n' 'KillSignal=SIGINT'
   printf '%s\n' 'KillMode=mixed'
   printf '%s\n' 'SuccessExitStatus=130 143'
-  printf '%s\n' 'TimeoutStopSec=60'
+  printf '%s\n' 'TimeoutStopSec=120'
   printf '%s\n' 'Restart=on-failure'
   printf '%s\n' 'RestartSec=10'
   printf '%s\n' '' '[Install]'
